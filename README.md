@@ -81,6 +81,25 @@ One-off runs without touching the registry:
 Other flags: `--chapters 1,3-5` (subset), `--force` (ignore resume
 state).
 
+## Dashboard (upload → run → download)
+
+`dashboard.py` is a thin web shell around the same CLI functions —
+the pipeline core stays deterministic and untouched:
+
+```bash
+python dashboard.py        # binds 0.0.0.0:$PORT (default 8000)
+```
+
+- **Upload** a corrected book PDF (auto-registers in `books.json`;
+  subject code defaults to the file name prefix)
+- **Run / Re-run** in a background thread with a live chapter log;
+  one book at a time; the export step runs automatically afterwards
+- **Download** `final_export.zip` (gate status + receipt shown inline)
+
+On Railway: mount a Volume at `/out` so the zip survives redeploys
+(and optionally `/pdfs` for uploads). Railway injects `$PORT`; the
+dashboard binds it and Railway exposes the public URL automatically.
+
 ## How extraction works
 
 1. **Contents table** (`qbank/toc.py`) — parsed geometrically from word

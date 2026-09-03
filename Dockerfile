@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY qbank/ qbank/
 COPY scripts/ scripts/
 COPY tests/ tests/
-COPY books.json FORMAT.md ./
+COPY books.json FORMAT.md dashboard.py ./
 
 # book PDFs: attach a Railway Volume mounted at /pdfs (or bake into
 # pdfs/) and run:
@@ -19,4 +19,5 @@ COPY books.json FORMAT.md ./
 ENV QBANK_PDFS_DIR=/pdfs \
     OUTPUT_DIR=/out
 
-CMD ["python", "-m", "qbank", "--help"]
+# Railway injects $PORT; the dashboard binds 0.0.0.0:$PORT
+CMD ["python", "dashboard.py"]
