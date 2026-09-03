@@ -62,6 +62,7 @@ def _manifest_and_files(claims, subject: str, chapter_no: int):
             "q_id": qid, "type": mtype, "option_letter": letter,
             "file": c.file, "source_pages": [c.page],
             "extraction_page": c.page,
+            "table_id": c.table_id,
         })
     return image_files_by_q, pages_by_file, manifest
 
@@ -72,7 +73,9 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
     t0 = time.time()
     scan = scan_chapter(book, ch.file_start, ch.file_end)
     (records, option_markers, table_regions, glyph_audit,
-     extra_anoms) = build_chapter_records(book, scan, ch.chapter_no)
+     extra_anoms, table_stats) = build_chapter_records(
+        book, scan, ch.chapter_no,
+        page_range=(ch.file_start, ch.file_end))
     anomalies = list(scan.anomalies) + list(extra_anoms)
     census = _census_summary(scan, anomalies)
 
@@ -98,7 +101,7 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
         chapter_no=ch.chapter_no, q_rows=q_rows, a_rows=a_rows,
         s_rows=s_rows, un_rows=un_rows, orphan_rows=orphan_rows,
         manifest_rows=manifest, scan_summary=census,
-        glyph_audit=dict(glyph_audit),
+        glyph_audit=dict(glyph_audit), table_stats=table_stats,
         image_report_summary={
             "claimed": len(img_rep.claims),
             "orphans": len(img_rep.orphans),

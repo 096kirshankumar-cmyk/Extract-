@@ -116,14 +116,37 @@ dashboard binds it and Railway exposes the public URL automatically.
    record; stem/options/solution text is reflowed from visual-order
    baselines (line-continuation fragments merge back by y/3 bucket +
    x-order).
-4. **Tables** — a table exists **iff the book drew rules**: long
-   horizontal rules stitched by verticals form a grid box
-   (`textlayer._ruled_table_boxes`). Baselines inside a box move to the
-   row's `tables` field as pipe-markdown (columns from repeating line-x0
-   anchors, cells read baseline-by-baseline — never reordered) and the
-   grid is also rendered pixel-exact at 200 dpi as a WebP
-   (`*_SOL_NN.webp`, manifest `xref = -1`). Unruled pseudo-tables and
-   bullet lists stay verbatim prose.
+4. **Tables** (`qbank/tables.py`) — a table exists **iff the book drew
+   rules**: long horizontal rules stitched by verticals form a grid
+   box (`textlayer._ruled_table_boxes`). Each box is rebuilt
+   geometrically, never from flattened text:
+   vertical rules give the columns, horizontal rules give the row
+   bands; lines are assigned to (band, column) cells by bbox.
+   - *In-cell line reconstruction*: a wrapped line is glued to its
+     predecessor without a space only when the predecessor fills the
+     column's measured fill edge AND that edge reaches the column's
+     right rule (the typesetter ran out of room — "medial su"+"rface"
+     = "medial surface", "C2,C"+"3" = "C2,C3", "Grad"+"e 1" =
+     "Grade 1"); trailing hyphens join keeping the hyphen; every other
+     wrap keeps its space ("middle"+"ear" = "middle ear"). Each join
+     is layout-proven and counted (`line_joins`).
+   - *Lost-space repair*: camel-boundary spaces are re-inserted for
+     text-layer corruptions ("antihelixSome" → "antihelix Some"),
+     guarded so pH/IgG/mOsm/B12 never split; counted
+     (`camel_space_fixes`). Remaining suspects (long space-less
+     tokens) are flagged in the table's `validation.warnings`, never
+     silently rewritten.
+   - *Cross-page merge*: same column geometry on the next page +
+     repeated header (deduplicated) or last-box → first-box document
+     flow merges into ONE logical table — one `table_id`,
+     `source_pages` lists every contributing page.
+   - Every logical table ships as pipe-markdown in the row's `tables`
+     field AND as one pixel-exact 200 dpi WebP render per contributing
+     page (manifest `xref = -1`); both carry the same `table_id`, so
+     the structured and visual representations are linked, never
+     accidental duplicates. Per-chapter aggregates land in
+     `chapter_completeness.json` → `tables`.
+   Unruled pseudo-tables and bullet lists stay verbatim prose.
 5. **Glyphs** (`qbank/glyphs.py`) — the corrected books still carry two
    broken font mappings (Symbol `°`, AdobePiStd `■`). Sentinelisation
    is **per span**: font identity is read from the individual

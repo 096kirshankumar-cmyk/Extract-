@@ -39,6 +39,8 @@ class Claim:
     page: int                  # extraction page (1-based file page)
     xref: int
     shared: bool = False       # same bytes already written for another placement
+    table_id: str | None = None  # links a table clip render to its
+                                 # structured markdown record
 
 
 @dataclass
@@ -216,9 +218,17 @@ def claim_chapter_images(book: Book, scan: ChapterScan, store: ImageStore,
                 file=rel_file, q_no=qn, kind=kind, option_letter=letter,
                 page=pg, xref=im.xref, shared=shared))
 
-    # printed tables: deterministic clip renders, owned by their block
+    # printed tables: deterministic clip renders, owned by their block.
+    # One render per contributing BOX (a cross-page logical table gets
+    # one render per page, all tagged with its shared table_id); a box
+    # referenced by several blocks renders once.
+    rendered_boxes = set()
     for (qn, zone), regions in sorted((table_regions or {}).items()):
-        for (pg, bbox) in regions:
+        for region in regions:
+            pg, bbox, table_id = region
+            if (pg, tuple(bbox)) in rendered_boxes:
+                continue
+            rendered_boxes.add((pg, tuple(bbox)))
             slot_key = f"{subject}/{chapter_id}-{qn:03d}_{zone}"
             slots[slot_key] = slots.get(slot_key, 0) + 1
             rel_name = f"{slot_key}_{slots[slot_key]:02d}.webp"
@@ -229,5 +239,5 @@ def claim_chapter_images(book: Book, scan: ChapterScan, store: ImageStore,
             rep.table_renders += 1
             rep.claims.append(Claim(
                 file=rel_file, q_no=qn, kind=zone, option_letter=None,
-                page=pg, xref=-1, shared=False))
+                page=pg, xref=-1, shared=False, table_id=table_id))
     return rep

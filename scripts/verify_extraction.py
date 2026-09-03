@@ -140,6 +140,7 @@ def zone_texts(doc, first: int, last: int, offset: int):
     them into the tables field). *_full keeps everything — table
     markdown is checked against the full zone."""
     q_all, k_lines, s_all = [], [], []
+    q_dl, s_dl = [], []        # individual dict-lines per zone (cell checks)
     mode = "Q"
     for pno in range(first - 1, last):
         lines = visual_lines(doc[pno], pno + 1 - offset)
@@ -160,10 +161,12 @@ def zone_texts(doc, first: int, last: int, offset: int):
                 mode = "S"
             if mode == "Q":
                 q_all.append((joined, in_table))
+                q_dl.extend(t for _x, _y, t in row)
             elif mode == "K":
                 k_lines.append(joined)
             else:
                 s_all.append((joined, in_table))
+                s_dl.extend(t for _x, _y, t in row)
 
     def strip_runs(pairs):
         return [t for t, in_table in pairs if not in_table]
@@ -184,7 +187,50 @@ def zone_texts(doc, first: int, last: int, offset: int):
             norm(" ".join(content(strip_runs(q_all)))),
             k_lines,
             norm(" ".join(content(s_texts))),
-            norm(" ".join(content(strip_runs(s_all)))))
+            norm(" ".join(content(strip_runs(s_all)))),
+            [norm(RE_MARKER.sub("", t)) for t in q_dl],
+            [norm(RE_MARKER.sub("", t)) for t in s_dl])
+
+
+def _cell_in_lines(cell_norm: str, line_norms) -> bool:
+    """A reconstructed table cell must equal an ORDERED concatenation
+    of zone dict-lines (the cell was joined from its own lines;
+    joining only removes/keeps spaces, which norm() erases). Non-
+    greedy: every possible consumption frontier is tracked, so an
+    earlier line that merely PREFIX-matches the cell (e.g. "T1" vs
+    cell "T1a") cannot sabotage the exact single-line match."""
+    if not cell_norm:
+        return True
+    n = len(cell_norm)
+    reach = {0}
+    for ln in line_norms:
+        if not ln:
+            continue
+        nxt = set()
+        for pos in reach:
+            if pos < n and cell_norm.startswith(ln, pos):
+                p2 = pos + len(ln)
+                if p2 == n:
+                    return True
+                nxt.add(p2)
+        reach |= nxt
+    return False
+
+
+def _table_ok(md: str, *line_sets) -> bool:
+    """Every non-separator markdown row's non-empty cells must be
+    verifiable in at least one zone's baseline list."""
+    for row in md.splitlines():
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        if all(set(c) <= set("- ") for c in cells):
+            continue                      # |---|---| separator
+        for c in cells:
+            nc = norm(c)
+            if not nc:
+                continue
+            if not any(_cell_in_lines(nc, ls) for ls in line_sets):
+                return False
+    return True
 
 
 def main() -> int:
@@ -212,7 +258,8 @@ def main() -> int:
     for ch in chapters:
         cid, no = ch["chapter_id"], ch["chapter_no"]
         first, last = ranges[no]
-        nqz, nqp, k_lines, nsz, nsp = zone_texts(doc, first, last, offset)
+        (nqz, nqp, k_lines, nsz, nsp,
+         q_lns, s_lns) = zone_texts(doc, first, last, offset)
 
         rows = {f.split("/")[-1]: [json.loads(l) for l in open(f)]
                 for f in glob.glob(f"{out_root}/split/{subject}/{cid}/*.jsonl")}
@@ -231,12 +278,13 @@ def main() -> int:
                     failures.append(f"{r['q_id']}: text not found in zones")
                 covered += len(nv)
             for t in r.get("tables") or []:
-                nv = norm(t.get("markdown", ""))
-                if not nv:
+                md = t.get("markdown", "")
+                if not md:
                     continue
-                if nv not in nqz and nv not in nsz:
-                    failures.append(f"{r['q_id']}: table not found in zones")
-                covered += len(nv)
+                if not _table_ok(md, q_lns, s_lns):
+                    failures.append(f"{r['q_id']}: table cells not "
+                                    f"verifiable in zones ({t.get('table_id')})")
+                covered += len(norm(md))
         for r in srows:
             nv = norm(r["solution_text"])
             if nv:

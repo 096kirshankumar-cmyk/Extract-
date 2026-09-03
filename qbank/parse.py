@@ -21,6 +21,7 @@ from collections import Counter
 from . import glyphs
 from .config import (GRADE_RESOLVED, GRADE_RESOLVED_ANCHORED, PROV_TEXT_LAYER,
                      QA_INCOMPLETE, QA_READY, QA_REVIEW_NEEDED)
+from .tables import ChapterTables
 from .textlayer import Book, Line, reflow
 from .zones import ChapterScan
 
@@ -40,68 +41,20 @@ def _baseline_groups(body: list[Line]):
             for k in sorted(groups)]
 
 
-def _table_markdown(book: Book, pg: int, box, counts) -> str:
-    """Reconstruct one ruled table from its LINES.
-
-    Cells are grouped into baselines with exactly the parser's/
-    verifier's y/3 bucketing and read left-to-right, so the cell text
-    concatenation is always a substring of the page's visual-order
-    text — no reordering, no guessing. Column anchors are the line
-    x0 edges that repeat down the table (columns are left-aligned);
-    a rare single-line column simply folds into its left neighbour,
-    which affects cosmetics, never content or order."""
-    pd = book.page(pg)
-    lines = [l for l in pd.lines
-             if box[0] - 2 <= l.x0 <= box[2] + 2
-             and box[1] - 3 <= (l.y0 + l.y1) / 2 <= box[3] + 3]
-    if not lines:
-        return ""
-
-    xs = sorted(l.x0 for l in lines)
-    edges: list[float] = []
-    for x in xs:
-        if edges and x - edges[-1] <= 8:
-            continue
-        edges.append(x)
-    anchors = [a for a in edges
-               if sum(1 for l in lines if abs(l.x0 - a) <= 8) >= 2]
-    if not anchors:
-        anchors = [xs[0]]
-
-    def col_of(l):
-        c = 0
-        for i, a in enumerate(anchors):
-            if l.x0 >= a - 4:
-                c = i
-        return c
-
-    buckets: dict = {}
-    for l in lines:
-        buckets.setdefault(round(l.y0 / 3.0), []).append(l)
-    md_rows = []
-    for bkey in sorted(buckets):
-        cells = [""] * len(anchors)
-        for l in sorted(buckets[bkey], key=lambda l: l.x0):
-            c = col_of(l)
-            cells[c] = (cells[c] + " " + l.text).strip()
-        cells = [glyphs.repair(c, counts) if c else c for c in cells]
-        if any(cells):
-            md_rows.append("| " + " | ".join(cells) + " |")
-    if md_rows:
-        md_rows.insert(1, "|" + "---|" * len(anchors))
-    return "\n".join(md_rows)
-
-
-def _extract_tables(book: Book, body: list[Line], counts):
+def _extract_tables(book: Book, body: list[Line], ctables, counts):
     """Split RULED-table baselines out of a block's body.
 
     A baseline is table content when its lines' y-center falls inside
     a ruled-table box on its page — the book literally drew the grid,
-    so there is no guessing. Unruled column text and bullets stay
-    prose (verbatim, visual order). Returns (kept_lines, tables,
-    regions=[(page, bbox)])."""
+    so there is no guessing. The lookup returns the chapter's LOGICAL
+    table (cross-page continuations pre-merged into one record with
+    one table_id); every contributing box becomes one clip-render
+    region tagged with the same id. A ruled region with no readable
+    cells (a drawn figure) keeps its baselines in the prose — nothing
+    is dropped. Returns (kept_lines, table_records,
+    regions=[(page, bbox, table_id)])."""
     tables, regions, kept = [], [], []
-    md_cache: dict = {}
+    seen_tids = set()
     for (pg, _bkt), lns in _baseline_groups(body):
         boxes = book.page(pg).table_boxes
         ycen = sum(l.y0 for l in lns) / len(lns)
@@ -110,17 +63,15 @@ def _extract_tables(book: Book, body: list[Line], counts):
         if inside is None:
             kept.extend(lns)
             continue
-        key = (pg, inside)
-        if key not in md_cache:
-            md_cache[key] = _table_markdown(book, pg, inside, counts)
-        md = md_cache[key]
-        if not md:
-            # ruled region with no readable words (a drawn figure, not
-            # a text table) — its lines stay prose; nothing is dropped
+        lt = ctables.lookup(pg, tuple(inside), counts)
+        if lt is None or not lt.markdown:
             kept.extend(lns)
             continue
+        if lt.table_id not in seen_tids:
+            seen_tids.add(lt.table_id)
+            tables.append(lt.as_record())
+        key = (pg, tuple(inside), lt.table_id)
         if key not in regions:
-            tables.append({"type": "table", "markdown": md})
             regions.append(key)
     return kept, tables, regions
 
@@ -161,9 +112,11 @@ def _split_stem_options(lines: list[Line]):
 
 
 def build_chapter_records(book: Book, scan: ChapterScan,
-                          chapter_no: int) -> tuple[dict, dict, dict, Counter, list]:
+                          chapter_no: int,
+                          page_range: tuple | None = None
+                          ) -> tuple[dict, dict, dict, Counter, list, dict]:
     """Returns (records, option_markers, table_regions, glyph_audit,
-    extra_anomalies).
+    extra_anomalies, table_stats).
 
     records[q_no] = {
         question_text, options {A..D}, correct_option, solution_text,
@@ -177,6 +130,13 @@ def build_chapter_records(book: Book, scan: ChapterScan,
     anomalies = []
     option_markers = {}
     table_regions = {}
+    first_pg = (page_range[0] if page_range else
+                (scan.question_headers[0][1].page
+                 if scan.question_headers else 1))
+    last_pg = (page_range[1] if page_range else
+               (scan.chapter_end[0] if scan.chapter_end
+                else book.total_pages))
+    ctables = ChapterTables(book, chapter_no, first_pg, last_pg)
     key_map = {r.q_no: r for r in scan.key_rows}
     sol_map = dict(scan.solution_headers)
     qhdr_map = dict(scan.question_headers)
@@ -201,7 +161,8 @@ def build_chapter_records(book: Book, scan: ChapterScan,
             s, e = qblocks[qn]
             rec["q_header_page"] = qhdr_map[qn].page
             body = _lines_between(book, s, e)
-            body, q_tables, q_regions = _extract_tables(book, body, counts)
+            body, q_tables, q_regions = _extract_tables(
+                book, body, ctables, counts)
             rec["tables"].extend(q_tables)
             if q_regions:
                 table_regions[(qn, "Q")] = q_regions
@@ -237,7 +198,7 @@ def build_chapter_records(book: Book, scan: ChapterScan,
             rec["s_header_page"] = sol_map[qn].page
             sol_lines = _lines_between(book, s, e)
             sol_lines, s_tables, s_regions = _extract_tables(
-                book, sol_lines, counts)
+                book, sol_lines, ctables, counts)
             rec["tables"].extend(s_tables)
             if s_regions:
                 table_regions[(qn, "SOL")] = s_regions
@@ -261,7 +222,8 @@ def build_chapter_records(book: Book, scan: ChapterScan,
             rec["flags"].append("no_key_row")
         if qn not in sblocks:
             rec["flags"].append("no_solution_header")
-    return records, option_markers, table_regions, glyph_audit, anomalies
+    return (records, option_markers, table_regions, glyph_audit,
+            anomalies, ctables.stats())
 
 
 def grade_and_status(rec: dict) -> tuple[str, str, list[str]]:
