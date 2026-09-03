@@ -10,6 +10,34 @@ ever guessed: a row is written only when the printed page proves it,
 and the census gate refuses to build the export zip when any chapter's
 question headers, answer-key rows and solution headers do not match.
 
+## Prerequisites
+
+- Python ≥ 3.10
+- Dependencies: `PyMuPDF`, `Pillow` (`pip install -r requirements.txt`;
+  `pytest` is only needed for the test suite)
+- **Corrected text layer required.** v2 reads the PDF's internal text
+  layer exclusively. A scanned or image-only PDF yields no baselines —
+  the TOC parse raises and the run stops. v2 intentionally fails rather
+  than guess; it never falls back to OCR.
+
+## Workspace Structure
+
+```text
+.
+├── books.json             # Registry: subject code -> pdf path, page_offset
+├── pdfs/                  # (gitignored) place corrected book PDFs here
+├── qbank/                 # Core pipeline package (run: python -m qbank)
+├── scripts/
+│   └── verify_extraction.py   # independent ground-truth verifier
+├── tests/                 # pytest suite (21 tests, synthetic PDFs only)
+├── FORMAT.md              # Output contract specification (frozen)
+├── glyph_artifacts.md     # Glyph artifact census + repair audit (BIO)
+├── requirements.txt
+├── Dockerfile
+└── qbank_output/          # Generated (gitignored): split/, assets/,
+                           #   data/, subjects/, final_export.zip
+```
+
 ## What v2 does differently
 
 | v1 (deleted)                  | v2 (this tree)                                    |
@@ -35,7 +63,7 @@ pip install -r requirements.txt
 
 # put the book PDFs in pdfs/ (gitignored) or point QBANK_PDFS_DIR at a dir
 python -m qbank run --book BIO              # extract (resumable per chapter)
-python -m qbank status                      # progress + census summary
+python -m qbank status                      # progress + export-gate report
 python -m qbank export                      # gate + build final_export.zip
 ```
 
@@ -48,6 +76,10 @@ python -m qbank export                      # gate + build final_export.zip
 
 `page_offset: "auto"` proves the file-page ↔ printed-page offset from
 the books' own footer numbers; pass `--page-offset N` to override.
+One-off runs without touching the registry:
+`python -m qbank run --pdf path/to/book.pdf --subject OBG`.
+Other flags: `--chapters 1,3-5` (subset), `--force` (ignore resume
+state).
 
 ## How extraction works
 
@@ -83,6 +115,68 @@ the books' own footer numbers; pass `--page-offset N` to override.
 7. **Gate** (`qbank/export.py`) — the zip is built only when every
    chapter's census is contiguous and no row is `REVIEW_NEEDED`.
 
+**Provenance.** Every text field ships as `TEXT_LAYER` because v2 reads
+only the PDF's internal text layer. That makes it immune to OCR
+hallucination — and strictly dependent on the publisher's corrected
+text layer. If a PDF is purely image-based, v2 fails loudly instead of
+inventing content.
+
+## Onboarding a new subject (e.g. OBGYN ED8)
+
+1. **Register the book** in `books.json` — new key, PDF path,
+   `page_offset: "auto"` — or probe once with
+   `python -m qbank run --pdf <path> --subject OBG`.
+2. **Run the extraction.** `run` is chapter-atomic and resumable; a
+   chapter whose census fails prints `<<< CENSUS FAILED` but does not
+   stop the book.
+3. **Verify before anything else**:
+   `python scripts/verify_extraction.py <book.pdf> OBG qbank_output`.
+   It re-derives an independent ground truth; investigate every failure
+   line before trusting the output.
+4. **Audit glyphs.** New subjects can introduce broken font mappings
+   beyond the two catalogued for BIO. Look for
+   `"unknown_glyph"` in each chapter's `glyph_fix_counts`
+   (`chapter_completeness.json`) and for `REVIEW_NEEDED` rows — those
+   mark sentinels no rule matched. If a pattern recurs, add an ordered
+   rule to `qbank/glyphs.py`, add a regression case to
+   `tests/test_glyphs.py`, and extend `glyph_artifacts.md` with a
+   per-subject artifact table. Unknown glyphs must stay flagged — never
+   paper over a flag with a guessed replacement.
+5. **Check the structural assumptions.** The zone regexes in
+   `qbank/zones.py` expect ED8-style printed headers
+   (`Question N:`, `Answer Key`, `Solution to Question N:`) and a
+   numeric contents table. A book that prints different furniture will
+   show up as census failures — extend the regexes/whitelists, not the
+   gate.
+
+## Troubleshooting gate failures
+
+`python -m qbank export` refuses the zip (and prints the blocking
+items) when any of these hold — do not bypass the gate, fix the cause:
+
+- **census failed** — question headers, key rows or solution headers
+  are non-contiguous or unequal in a chapter. Usually a header variant
+  the zone regexes missed, or a genuinely misprinted book.
+- **unresolved q_ids** — printed key/solution anchors exist with no
+  matching question header (see `unresolved_qids.jsonl`, which records
+  the exact reason from a fixed vocabulary).
+- **`REVIEW_NEEDED` rows** — a glyph sentinel no rule could resolve.
+  See step 4 of the onboarding guide.
+
+Debug files, per chapter under `split/{SUBJ}/{SUBJ}-NNN/`:
+
+- `chapter_completeness.json` — the census numbers,
+  `glyph_fix_counts`, image claim summary; written **last**, so its
+  presence means the chapter is fully on disk.
+- `unresolved_qids.jsonl` — anchored-but-unmatched questions, with
+  `reason` and the anchors that were found.
+- `orphans.jsonl` — embedded images no block/option interval claimed.
+  Orphans do **not** lock the gate, but review them: each is either
+  decorative furniture or a figure whose y-center fell outside every
+  block interval (a parsing bug worth fixing).
+- `image_manifest.jsonl` / `data/image_ownership.jsonl` — one row per
+  shipped image with its claim evidence.
+
 ## Verification
 
 `scripts/verify_extraction.py` re-derives an independent visual-order
@@ -114,4 +208,4 @@ python -m pytest tests/ -q        # 21 tests, no fixtures needed
 
 `OUTPUT_DIR` overrides the output root (default `qbank_output/`);
 `QBANK_PDFS_DIR` adds a PDF search directory; `QBANK_BOOKS` overrides
-`books.json`. Python ≥ 3.10, deps: PyMuPDF, Pillow.
+`books.json`.
