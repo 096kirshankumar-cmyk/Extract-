@@ -161,7 +161,12 @@ dashboard binds it and Railway exposes the public URL automatically.
    guessed.
 6. **Images** (`qbank/images.py`) — embedded figures are claimed by
    (page, y-center) inside the owning block or option interval;
-   orphans go to `orphans.jsonl`. Nothing is dropped silently.
+   orphans go to `orphans.jsonl`. Nothing is dropped silently. Some
+   publisher figures are stored as 2-4 interlocking image placements;
+   touching placements are clustered per page and shipped as ONE clip
+   render of their union bbox (pixel-exact stitch, seams and vector
+   overlays included) instead of cut fragments — recorded in
+   `chapter_completeness.json` as `merged_placements`.
 7. **Gate** (`qbank/export.py`) — the zip is built only when every
    chapter's census is contiguous and no row is `REVIEW_NEEDED`.
 

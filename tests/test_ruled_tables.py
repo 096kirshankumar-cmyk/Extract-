@@ -8,7 +8,7 @@ pseudo-tables and short underlines are never tables.
 import pymupdf
 import pytest
 
-from qbank.tables import build_box
+from qbank.parse import _table_markdown
 from qbank.textlayer import Book, _ruled_table_boxes
 
 
@@ -71,11 +71,12 @@ def test_markdown_keeps_visual_order(tmp_path):
     book = Book(str(pdf))
     box = book.page(1).table_boxes[0]
     from collections import Counter
-    bt = build_box(book, 1, box, Counter())
-    md_rows = ["| " + " | ".join(r) + " |" for r in bt.rows]
-    assert md_rows[0] == "| Type | Function | Site |"
-    assert md_rows[1] == "| Kinase | adds phosphate | cytosol |"
-    assert md_rows[2] == "| Lipase | cleaves ester | gut |"
+    md = _table_markdown(book, 1, box, Counter())
+    lines = md.splitlines()
+    assert lines[0] == "| Type | Function | Site |"
+    assert lines[1] == "|---|---|---|"
+    assert lines[2] == "| Kinase | adds phosphate | cytosol |"
+    assert lines[3] == "| Lipase | cleaves ester | gut |"
 
     # every cell string must appear in the page's visual-order text
     flat = " ".join(l.text for l in sorted(book.page(1).lines,

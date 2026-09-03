@@ -327,7 +327,8 @@ def main() -> int:
             f"{out_root}/split/{subject}/{cid}/chapter_completeness.json"))
         imgs = comp["images"]
         accounted = (imgs["claimed"] - imgs.get("table_renders", 0)
-                     + imgs["orphans"] + imgs["skipped"])
+                     + imgs["orphans"] + imgs["skipped"]
+                     + imgs.get("merged_placements", 0))
         if placed != accounted:
             failures.append(
                 f"{cid}: {placed} placements vs {accounted} accounted "

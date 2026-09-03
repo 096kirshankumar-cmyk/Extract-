@@ -196,8 +196,7 @@ def build_rows(records: dict, subject: str, chapter_id: str, chapter_no: int,
 def write_chapter_split(*, output_root: Path, subject: str, chapter_id: str,
                         chapter_no: int, q_rows, a_rows, s_rows, un_rows,
                         orphan_rows, manifest_rows, scan_summary: dict,
-                        glyph_audit: dict, image_report_summary: dict,
-                        table_stats: dict | None = None) -> dict:
+                        glyph_audit: dict, image_report_summary: dict) -> dict:
     ch_dir = Path(output_root) / "split" / subject / chapter_id
     ch_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write_jsonl(ch_dir / "questions.jsonl", q_rows)
@@ -249,7 +248,6 @@ def write_chapter_split(*, output_root: Path, subject: str, chapter_id: str,
         "census": scan_summary,
         "glyph_fix_counts": glyph_audit,
         "images": image_report_summary,
-        "tables": table_stats or {},
         "phase2_pending_anchors": {},
     }
     _atomic_write_json(ch_dir / "chapter_completeness.json", completeness)

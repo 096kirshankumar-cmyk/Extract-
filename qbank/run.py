@@ -108,6 +108,11 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
             "skipped": len(img_rep.skipped),
             "shared_multi_draw": sum(1 for c in img_rep.claims if c.shared),
             "table_renders": img_rep.table_renders,
+            # figures the book stores as N interlocking placements are
+            # claimed as one stitched render: the extra N-1 placements
+            # per group are accounted for here, not as separate claims
+            "merged_placements": sum(max(0, c.merged - 1)
+                                     for c in img_rep.claims),
         })
 
     # global image-ownership ledger (one row per claim, v1-shaped)
@@ -120,8 +125,10 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
                  {"Q": "question", "SOL": "solution"}[c.kind]),
         "method": "textlayer_geometry",
         "evidence": ("clip render of printed table region"
-                     if c.xref == -1 else
-                     f"xref {c.xref} bbox center inside block interval"),
+                     if c.xref == -1 and c.table_id else
+                     (f"clip render merging {c.merged} adjacent "
+                      "placements of one figure" if c.merged else
+                      f"xref {c.xref} bbox center inside block interval")),
         "confidence": "high", "outcome": "claimed",
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "obj_id": None, "final_file": c.file,

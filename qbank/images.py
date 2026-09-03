@@ -41,6 +41,9 @@ class Claim:
     shared: bool = False       # same bytes already written for another placement
     table_id: str | None = None  # links a table clip render to its
                                  # structured markdown record
+    merged: int = 0            # >0: figure was stored as N adjacent
+                               # image placements, stitched into one
+                               # clip render of their union bbox
 
 
 @dataclass
@@ -145,6 +148,35 @@ class ImageStore:
         return rel_name
 
 
+def _adjacent_groups(imgs, tol: float = 4.0) -> list[list]:
+    """Cluster placements whose bboxes touch/overlap.
+
+    The publisher stores some figures as 2-3 interlocking image
+    pieces (main panel + side/bottom strips). Each piece on its own
+    is a cut fragment — the visual figure is the union, so claiming
+    must happen per cluster, never per piece."""
+    groups: list[list] = []
+    for im in imgs:
+        b = im.bbox
+        hit = None
+        for g in groups:
+            if any(b[0] <= o.bbox[2] + tol and b[2] >= o.bbox[0] - tol
+                   and b[1] <= o.bbox[3] + tol and b[3] >= o.bbox[1] - tol
+                   for o in g):
+                hit = g
+                break
+        if hit is None:
+            hit = []
+            groups.append(hit)
+        hit.append(im)
+    return groups
+
+
+def _union_bbox(imgs):
+    return (min(i.bbox[0] for i in imgs), min(i.bbox[1] for i in imgs),
+            max(i.bbox[2] for i in imgs), max(i.bbox[3] for i in imgs))
+
+
 def _option_intervals(qblocks: dict, option_markers: dict) -> dict:
     """{qn: [(letter, start_pos, end_pos)]} — each option owns marker ->
     next marker (option D: marker -> end of the question block)."""
@@ -172,37 +204,39 @@ def claim_chapter_images(book: Book, scan: ChapterScan, store: ImageStore,
 
     for pg in range(first_page, last_page + 1):
         pd = book.page(pg)
-        for im in pd.images:
-            area = (im.bbox[2] - im.bbox[0]) * (im.bbox[3] - im.bbox[1])
+        for group in _adjacent_groups(pd.images):
+            bbox = _union_bbox(group)
+            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
             if area > config.FULLPAGE_AREA_FRAC * pd.width * pd.height:
                 rep.skipped.append((pg, "fullpage_background"))
                 continue
+            pos = (pg, (bbox[1] + bbox[3]) / 2.0)
 
             zone = qn = None
             for q, (s, e) in qblocks.items():
-                if s <= im.pos < e:
+                if s <= pos < e:
                     zone, qn = "Q", q
                     break
             if zone is None:
                 for q, (s, e) in sblocks.items():
-                    if s <= im.pos < e:
+                    if s <= pos < e:
                         zone, qn = "SOL", q
                         break
             if zone is None:
-                in_key = (scan.q_zone_end and scan.q_zone_end <= im.pos
+                in_key = (scan.q_zone_end and scan.q_zone_end <= pos
                           and (not scan.s_zone_start
-                               or im.pos < scan.s_zone_start))
+                               or pos < scan.s_zone_start))
                 rep.orphans.append(OrphanImage(
                     pg,
                     "image_in_answer_key_zone" if in_key
                     else "image_outside_blocks",
-                    im.xref))
+                    group[0].xref))
                 continue
 
             kind, letter = zone, None
             if zone == "Q":
                 for l, s, e in opt_iv.get(qn, []):
-                    if s <= im.pos < e:
+                    if s <= pos < e:
                         kind, letter = "OPT", l
                         break
 
@@ -210,13 +244,21 @@ def claim_chapter_images(book: Book, scan: ChapterScan, store: ImageStore,
                         f"{kind}" + (f"_{letter}" if letter else ""))
             slots[slot_key] = slots.get(slot_key, 0) + 1
             rel_name = f"{slot_key}_{slots[slot_key]:02d}.webp"
-            rel_file, shared = store.put(book, im.xref, rel_name)
+            if len(group) == 1:
+                rel_file, shared = store.put(book, group[0].xref, rel_name)
+                merged = 0
+            else:
+                # one figure stored as interlocking pieces — stitch by
+                # rendering the union bbox (pixel-exact, includes any
+                # vector overlay the book drew across the seams)
+                rel_file = store.put_render(book, pg, bbox, rel_name)
+                shared, merged = False, len(group)
             if rel_file is None:
                 rep.skipped.append((pg, "too_small_or_undecodable"))
                 continue
             rep.claims.append(Claim(
                 file=rel_file, q_no=qn, kind=kind, option_letter=letter,
-                page=pg, xref=im.xref, shared=shared))
+                page=pg, xref=group[0].xref, shared=shared, merged=merged))
 
     # printed tables: deterministic clip renders, owned by their block.
     # One render per contributing BOX (a cross-page logical table gets
