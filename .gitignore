@@ -3,3 +3,5 @@ __pycache__/
 fixtures/
 *.pyc
 .venv/
+.pytest_cache/
+pdfs/

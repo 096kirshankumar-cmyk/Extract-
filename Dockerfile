@@ -1,39 +1,22 @@
-FROM python:3.11-slim
-
-# poppler-utils gives us pdftoppm, pdfimages, pdftotext
-# tzdata: today_stamp() stamps the quota day in US/Pacific to match Google's
-# RPD reset. Without the tz database zoneinfo raises and we fall back to a
-# fixed UTC-8 offset (safe, but an hour off during US DST).
-RUN apt-get update && apt-get install -y poppler-utils tesseract-ocr tzdata && rm -rf /var/lib/apt/lists/*
+FROM python:3.12-slim
 
 WORKDIR /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Explicit siblings: a missing COPY is a ModuleNotFoundError at runtime
-# (Railway 2026-08-24: header_index / crop_parse were imported but not baked).
-COPY qbank_pipeline.py qbank_validator.py fix_output.py app.py split_outputs.py \
-     master_review_export.py gemini_keys.py review_digest.py review_queue.py \
-     flag_verifier.py boundary_phased.py header_index.py crop_parse.py FORMAT.md ./
-ENV PYTHONPATH=/app
-# PDFs get uploaded via the dashboard now, so no need to bake them into the image.
-# (If you'd rather pre-load them at build time, uncomment the next line and
-#  add a pdfs/ folder next to this Dockerfile.)
-# COPY pdfs/ ./pdfs/
+COPY qbank/ qbank/
+COPY scripts/ scripts/
+COPY tests/ tests/
+COPY books.json FORMAT.md ./
 
-# V2: SEPARATE output root on the Railway Volume -- v1 data (/data/qbank_output)
-# stays untouched while v2 is being proven.
-ENV OUTPUT_DIR=/data/qbank_output_v2
-# Flush every print() immediately, otherwise Docker block-buffers stdout and
-# pipeline progress never shows up in Railway's Deploy Logs in real time.
-ENV PYTHONUNBUFFERED=1
+# book PDFs: mount at /pdfs (or bake into pdfs/) and run:
+#   python -m qbank run --book BIO
+#   python -m qbank export
+ENV QBANK_PDFS_DIR=/pdfs \
+    OUTPUT_DIR=/out
+VOLUME ["/pdfs", "/out"]
 
-# Container clock stays UTC; the quota day is computed in US/Pacific by
-# today_stamp(). Override only if Google moves the reset boundary.
-ENV QUOTA_RESET_TZ=America/Los_Angeles
+RUN python -m pytest tests/ -q
 
-EXPOSE 8080
-# Gunicorn avoids Flask's development-server warning and is safe for Railway.
-# One worker is intentional: the dashboard keeps in-memory run state and must
-# not allow separate workers to start concurrent writes to the same volume.
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 4 --timeout 0 app:app"]
+CMD ["python", "-m", "qbank", "--help"]
