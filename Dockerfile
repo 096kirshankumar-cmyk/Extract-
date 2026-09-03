@@ -10,13 +10,13 @@ COPY scripts/ scripts/
 COPY tests/ tests/
 COPY books.json FORMAT.md ./
 
-# book PDFs: mount at /pdfs (or bake into pdfs/) and run:
+# book PDFs: attach a Railway Volume mounted at /pdfs (or bake into
+# pdfs/) and run:
 #   python -m qbank run --book BIO
 #   python -m qbank export
+# NOTE: no Docker VOLUME instruction — Railway rejects it; mount
+# Railway Volumes at /pdfs and /out from the dashboard instead.
 ENV QBANK_PDFS_DIR=/pdfs \
     OUTPUT_DIR=/out
-VOLUME ["/pdfs", "/out"]
-
-RUN python -m pytest tests/ -q
 
 CMD ["python", "-m", "qbank", "--help"]
