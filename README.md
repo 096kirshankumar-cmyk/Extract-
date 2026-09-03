@@ -87,7 +87,12 @@ state).
    baselines; chapter file ranges come from the TOC + proven offset.
 2. **Zones** (`qbank/zones.py`) — each chapter splits at the printed
    `Answer Key` baseline and the first `Solution to Question N:` header.
-   Key rows (`15 a`) are paired geometrically from the same baseline.
+   The key itself is a ruled table, but no pipe syntax is involved:
+   each `15 a` row is paired geometrically from words sharing one
+   baseline. Before any of this, the printed page number standing alone
+   in the bottom 12% of each page is lifted out of the text stream
+   (exact string match against the proven offset — kept in a per-page
+   footer audit, never parsed into stems or solutions).
 3. **Blocks** (`qbank/parse.py`) — one `Question N:` header anchors one
    record; stem/options/solution text is reflowed from visual-order
    baselines (line-continuation fragments merge back by y/3 bucket +
@@ -101,9 +106,12 @@ state).
    (`*_SOL_NN.webp`, manifest `xref = -1`). Unruled pseudo-tables and
    bullet lists stay verbatim prose.
 5. **Glyphs** (`qbank/glyphs.py`) — the corrected books still carry two
-   broken font mappings (Symbol `°`, AdobePiStd `■`). Spans of those
-   fonts are sentinelised at extraction time, then repaired by an
-   ordered, enumerated rule table covering exactly the 67 artifacts
+   broken font mappings (Symbol `°`, AdobePiStd `■`). Sentinelisation
+   is **per span**: font identity is read from the individual
+   `get_text("dict")` span, so a broken-font glyph inside an otherwise
+   clean line is caught and clean spans are never touched. Sentinels
+   are then repaired by an ordered, enumerated rule table covering
+   exactly the 67 artifacts
    catalogued for Biochemistry ED8. Every application is counted per
    question (`glyph_fix_counts` in `chapter_completeness.json`); real
    ArialMT degree signs are never touched; anything unmatched is
