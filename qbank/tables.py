@@ -41,6 +41,104 @@ from . import glyphs
 # lowercase run. Never splits pH / IgG / mOsm / B12 / VLDL.
 _CAMEL = re.compile(r"(?<=[a-z]{2})(?=[A-Z][a-z])")
 _LONG_TOKEN = re.compile(r"[A-Za-z]{12,}")
+_ALPHA = re.compile(r"[A-Za-z]+")
+
+
+def build_vocab(book) -> tuple:
+    """Book-wide evidence: lowercase word counts + adjacent-word pair
+    counts from the raw layer (visual rows). The space repairs below
+    only fire when the book itself prints the other form elsewhere —
+    document-internal evidence, no external knowledge, no blanket
+    whitespace regex."""
+    from .textlayer import word_rows
+    words: Counter = Counter()
+    pairs: Counter = Counter()
+    for pg in range(1, book.total_pages + 1):
+        for wr in word_rows(book.page(pg)):
+            toks = [w.text for w in wr if _ALPHA.fullmatch(w.text)]
+            for t in toks:
+                words[t.lower()] += 1
+            for a, b in zip(toks, toks[1:]):
+                pairs[(a.lower(), b.lower())] += 1
+    return words, pairs
+
+
+_FUNC = frozenset({"the", "not", "of", "a", "an", "in", "on", "at", "is",
+                   "or", "and", "to", "for", "with", "per", "by"})
+
+
+def _repair_token(tok: str, words: Counter, pairs: Counter) -> tuple:
+    """Publisher misprints inside ONE token, repaired only with
+    book-internal evidence:
+
+      "damage,fetal"       -> "damage, fetal"  (comma glued: both parts
+                                are printed words, glued form is not)
+      "Increasedpulmonary" -> "Increased pulmonary" (two common words,
+                                glued form never/rarely printed, spaced
+                                phrase printed elsewhere)"""
+    m = re.fullmatch(r"([A-Za-z]{3,}),([A-Za-z]{3,})", tok)
+    if (m and words.get(m.group(1).lower(), 0) >= 1
+            and words.get(m.group(2).lower(), 0) >= 1
+            and words.get((m.group(1) + m.group(2)).lower(), 0) == 0):
+        return f"{m.group(1)}, {m.group(2)}", 1
+    if tok.isalpha() and len(tok) >= 8 and words.get(tok.lower(), 0) == 0:
+        for i in range(3, len(tok) - 2):
+            h, t = tok[:i], tok[i:]
+            if (words.get(h.lower(), 0) >= 2 and words.get(t.lower(), 0) >= 2
+                    and pairs.get((h.lower(), t.lower()), 0) >= 1):
+                return f"{h} {t}", 1
+    return tok, 0
+
+
+def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
+    """Token-stream repair for one cell line (see _repair_token), plus:
+
+      "o fcancer" -> "of cancer"  (short non-word fragment whose head
+                                   completes a common word)
+      "Theprobability" -> "The probability" / "notdepend" -> "not depend"
+                   (function prefix + common remainder; glued form
+                    never printed as a real word elsewhere)"""
+    res, nfix = [], 0
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if (i + 1 < len(parts) and tok.isalpha() and 1 <= len(tok) <= 2
+                and words.get(tok.lower(), 0) <= 3
+                and words.get(parts[i + 1].lower(), 0) <= 1):
+            nxt = parts[i + 1]
+            hit = None
+            for k in range(1, min(3, len(nxt) - 2)):
+                if (words.get((tok + nxt[:k]).lower(), 0) >= 2
+                        and words.get(nxt[k:].lower(), 0) >= 2):
+                    hit = k
+                    break
+            if hit:
+                res.append(tok + nxt[:hit])
+                res.append(nxt[hit:])
+                nfix += 1
+                i += 2
+                continue
+        core, punct = tok, ""
+        while core and core[-1] in ",.;:!?)]":
+            punct = core[-1] + punct
+            core = core[:-1]
+        fixed, nf = _repair_token(core, words, pairs)
+        if (nf == 0 and core.isalpha() and len(core) >= 8
+                and words.get(core.lower(), 0) <= 1):
+            for j in range(3, len(core) - 1):
+                h, t2 = core[:j], core[j:]
+                thr = 1 if h.lower() in _FUNC else 2
+                if ((len(t2) >= 4 and t2[0].islower()
+                     and words.get(t2.lower(), 0) >= thr)
+                    or (t2.lower() in _FUNC and len(t2) >= 2
+                        and words.get(h.lower(), 0) >= 2)):
+                    if (words.get(h.lower(), 0) >= 2 or h.lower() in _FUNC):
+                        fixed, nf = f"{h} {t2}", 1
+                        break
+        nfix += nf
+        res.append(fixed + punct)
+        i += 1
+    return res, nfix
 
 
 # ------------------------------------------------------------------ rules
@@ -109,10 +207,11 @@ class BoxTable:
     header: tuple                 # first row (for continuation tests)
     line_joins: int = 0
     camel_fixes: int = 0
+    vocab_fixes: int = 0
     warnings: list = field(default_factory=list)
 
 
-def _join_decision(prev, nxt, fill_x1, fill_reaches_edge) -> str:
+def _join_decision(prev, nxt, fill_x1, fill_reaches_edge, vocab=None) -> str:
     """'glue' (no space), 'hyphen' (no space, keep '-') or 'space'.
 
     A mid-word split only happens when the typesetter ran out of room:
@@ -128,6 +227,21 @@ def _join_decision(prev, nxt, fill_x1, fill_reaches_edge) -> str:
         return "hyphen"
     if t[-1] in ".;:!?":
         return "space"
+    if vocab is not None:
+        # wrapped fragment the flush heuristic cannot decide: glue when
+        # the book's own vocabulary says the concatenation is a real
+        # word at least as common as each part alone, with at least
+        # one part too rare to be a deliberate standalone word
+        # ("fl"+"ow", "Atri"+"al", "inc"+"reasing", "ductu"+"s").
+        words = vocab[0]
+        a, b = t.split()[-1], n.split()[0]
+        ca, cb = words.get(a.lower(), 0), words.get(b.lower(), 0)
+        combo = words.get((a + b).lower(), 0)
+        if a.isalpha() and b.isalpha() and combo >= 2:
+            if combo >= ca and combo >= cb and min(ca, cb) <= 2:
+                return "glue"
+            if (len(a) == 1 or len(b) == 1) and min(ca, cb) <= 2:
+                return "glue"
     flush = fill_reaches_edge and prev.x1 >= fill_x1 - 2.5
     if not flush:
         return "space"
@@ -140,7 +254,7 @@ def _join_decision(prev, nxt, fill_x1, fill_reaches_edge) -> str:
     return "space"
 
 
-def build_box(book, pg: int, box, counts) -> BoxTable:
+def build_box(book, pg: int, box, counts, vocab=None) -> BoxTable:
     """Cell matrix of ONE ruled box with in-cell line reconstruction."""
     cols, row_ys = grid(book, pg, box)
     lines = _box_lines(book, pg, box)
@@ -192,7 +306,8 @@ def build_box(book, pg: int, box, counts) -> BoxTable:
                 if bk not in band_order:
                     band_order.append(bk)
                 continue
-            how = _join_decision(prev_line, l, fill[c], fill_reaches[c])
+            how = _join_decision(prev_line, l, fill[c], fill_reaches[c],
+                                 vocab)
             if how == "space":
                 cur = cur + " " + txt
             else:
@@ -213,6 +328,16 @@ def build_box(book, pg: int, box, counts) -> BoxTable:
                 if n:
                     bt.camel_fixes += n
                     t = fixed
+                if vocab is not None:
+                    # fixed point: chained glues ("theinfrat...") peel
+                    # one repair per pass
+                    for _ in range(3):
+                        fixed_parts, nf = _repair_tokens(
+                            t.split(" "), vocab[0], vocab[1])
+                        bt.vocab_fixes += nf
+                        t = " ".join(fixed_parts)
+                        if not nf:
+                            break
                 t = glyphs.repair(t, counts)
                 for tok in _LONG_TOKEN.findall(t):
                     bt.warnings.append(f"suspect_lost_space:{tok[:20]}")
@@ -234,6 +359,7 @@ class LogicalTable:
     header_deduplicated: bool
     line_joins: int
     camel_fixes: int
+    vocab_fixes: int
     cross_page: bool
     warnings: list
 
@@ -254,6 +380,7 @@ class LogicalTable:
                 "status": "warnings" if self.warnings else "ok",
                 "line_joins": self.line_joins,
                 "camel_space_fixes": self.camel_fixes,
+                "vocab_space_fixes": self.vocab_fixes,
                 "warnings": sorted(set(self.warnings))[:8],
             },
         }
@@ -276,9 +403,10 @@ class ChapterTables:
     render region per contributing box."""
 
     def __init__(self, book, chapter_no: int, first_page: int,
-                 last_page: int):
+                 last_page: int, vocab=None):
         self.book = book
         self.chapter_no = chapter_no
+        self.vocab = vocab
         self.boxes = []                 # ordered [(pg, box)]
         for pg in range(first_page, min(last_page, book.total_pages) + 1):
             for bx in sorted(book.page(pg).table_boxes, key=lambda b: b[1]):
@@ -295,7 +423,8 @@ class ChapterTables:
         if key not in self._bt_cache:
             self._bt_cache[key] = build_box(
                 self.book, pg, box,
-                counts if counts is not None else self._own_counts)
+                counts if counts is not None else self._own_counts,
+                self.vocab)
         return self._bt_cache[key]
 
     def _continues(self, i) -> str | None:
@@ -351,12 +480,13 @@ class ChapterTables:
         self._counter += 1
         tid = f"{self.chapter_no:03d}-T{self._counter:02d}"
         chunks = self._chains[ci]
-        matrix, joins, camels, warns = [], 0, 0, []
+        matrix, joins, camels, vfix, warns = [], 0, 0, 0, []
         dedup = False
         for k, (cpg, cbox, mode) in enumerate(chunks):
             bt = self._bt(cpg, cbox, counts)
             joins += bt.line_joins
             camels += bt.camel_fixes
+            vfix += bt.vocab_fixes
             warns += bt.warnings
             rows = bt.rows
             if k and mode == "dedup" and rows and rows[0] == matrix[0]:
@@ -370,8 +500,8 @@ class ChapterTables:
             table_id=tid, markdown=_markdown(matrix) if matrix else "",
             chunks=[(p, b) for p, b, _ in chunks],
             header_deduplicated=dedup, line_joins=joins,
-            camel_fixes=camels, cross_page=len(chunks) > 1,
-            warnings=warns)
+            camel_fixes=camels, vocab_fixes=vfix,
+            cross_page=len(chunks) > 1, warnings=warns)
         self._lt_cache[ci] = lt
         return lt
 
@@ -388,5 +518,6 @@ class ChapterTables:
             "header_dedups": sum(1 for t in lts if t.header_deduplicated),
             "line_joins": sum(t.line_joins for t in lts),
             "camel_space_fixes": sum(t.camel_fixes for t in lts),
+            "vocab_space_fixes": sum(t.vocab_fixes for t in lts),
             "tables_with_warnings": sum(1 for t in lts if t.warnings),
         }

@@ -10,5 +10,11 @@
     "path": "ENT_ed8_CLEAN_corrected.pdf",
     "page_offset": "auto",
     "note": "MARROW ED8 ENT, corrected text layer. 38 chapters / 703 questions verified."
+  },
+  "RAD": {
+    "subject": "RAD",
+    "path": "Radiology_ed8_CLEAN_corrected.pdf",
+    "page_offset": "auto",
+    "note": "MARROW ED8 Radiology, 411 pages, no bookmarks (printed TOC)."
   }
 }

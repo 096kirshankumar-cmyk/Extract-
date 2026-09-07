@@ -122,3 +122,54 @@ def test_record_schema(tmp_path):
     assert rec["extraction"] == "ruled_grid_geometry"
     assert rec["validation"]["status"] in ("ok", "warnings")
     book.close()
+
+def test_vocab_fragment_glue_and_token_repair():
+    from collections import Counter
+    from qbank.tables import _join_decision, _repair_token
+    words = Counter({"flow": 3, "of": 50, "increased": 4, "pulmonary": 6,
+                     "damage": 2, "fetal": 2, "o": 1, "al": 1})
+    pairs = Counter({("increased", "pulmonary"): 2})
+    vocab = (words, pairs)
+
+    class L:
+        def __init__(s, text, x1=100.0):
+            s.text, s.x1 = text, x1
+
+    # wrapped non-word fragments glue even in a non-flush column
+    assert _join_decision(L("Increasedpulmonary blood fl"),
+                          L("ow (pulmonary plethora)"), 500.0, False,
+                          vocab) == "glue"
+    assert _join_decision(L("development o"), L("f cancer"), 500.0, False,
+                          vocab) == "glue"
+    # real word boundary stays a space
+    assert _join_decision(L("Ventricular septal"), L("defect"), 500.0,
+                          False, vocab) == "space"
+    # token-level repairs with book-internal evidence only
+    assert _repair_token("damage,fetal", words, pairs) == ("damage, fetal", 1)
+    assert _repair_token("Increasedpulmonary", words, pairs) == \
+        ("Increased pulmonary", 1)
+    assert _repair_token("pulmonary", words, pairs) == ("pulmonary", 0)
+
+
+def test_vocab_token_stream_repairs():
+    from collections import Counter
+    from qbank.tables import _repair_tokens
+    words = Counter({"of": 50, "cancer": 11, "the": 3000, "probability": 1,
+                     "not": 100, "depend": 4, "increased": 27,
+                     "pulmonary": 128, "increasedpulmonary": 1,
+                     "therefore": 1, "there": 44, "flow": 25})
+    out, n = _repair_tokens(["development", "o", "fcancer"], words, Counter())
+    assert " ".join(out) == "development of cancer" and n == 1
+    out, n = _repair_tokens(["Theprobability", "of"], words, Counter())
+    assert " ".join(out) == "The probability of" and n == 1
+    out, n = _repair_tokens(["severity", "notdepend"], words, Counter())
+    assert " ".join(out) == "severity not depend" and n == 1
+    out, n = _repair_tokens(["Increasedpulmonary"], words, Counter())
+    assert " ".join(out) == "Increased pulmonary" and n == 1
+    # glued function-word suffix splits
+    words2 = words | Counter({"artery": 4, "or": 20})
+    out, n = _repair_tokens(["carotid", "arteryor"], words2, Counter())
+    assert " ".join(out) == "carotid artery or" and n == 1
+    # real words are untouched
+    out, n = _repair_tokens(["therefore", "flow"], words, Counter())
+    assert " ".join(out) == "therefore flow" and n == 0

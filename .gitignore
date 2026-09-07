@@ -6,3 +6,4 @@ fixtures/
 .venv/
 .pytest_cache/
 pdfs/
+qbank_output_rad/
