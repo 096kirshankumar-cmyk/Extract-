@@ -34,6 +34,35 @@ def _read_jsonl(p: Path):
             if l.strip()]
 
 
+def _llm_used(out_root: Path) -> bool:
+    """True when the Gemini transcription stage produced any evidence:
+    cached model responses, or any shipped table repaired by it."""
+    cache = out_root / "llm_cache"
+    if cache.is_dir() and any(cache.glob("*.json")):
+        return True
+    return False
+
+
+def _table_stats(out_root: Path) -> tuple:
+    """(gemini_repaired_tables, qa_review_tables) over shipped rows."""
+    seen, gem, review = set(), 0, 0
+    for nf in ("questions.jsonl", "solutions.jsonl"):
+        for qf in sorted((out_root / "split").glob(f"*/*/{nf}")):
+            for row in _read_jsonl(qf):
+                for t in row.get("tables") or []:
+                    tid = t.get("table_id")
+                    if tid in seen:
+                        continue
+                    seen.add(tid)
+                    v = t.get("validation") or {}
+                    if v.get("llm_space_repairs"):
+                        gem += 1
+                    if ((v.get("table_qa") or {}).get("status")
+                            == "REVIEW"):
+                        review += 1
+    return gem, review
+
+
 def gate_final_zip(output_root) -> dict:
     out_root = Path(output_root)
     split_root = out_root / "split"
@@ -82,6 +111,7 @@ def build_final_zip(output_root, dest=None) -> dict:
 
     shipped_status: dict = {}
     glyph_fix_total = 0
+    llm_tables, qa_review_tables = _table_stats(out_root)
     for qf in sorted(split_root.glob("*/*/questions.jsonl")):
         for row in _read_jsonl(qf):
             st = row.get("qa_status") or "UNLABELLED"
@@ -100,7 +130,11 @@ def build_final_zip(output_root, dest=None) -> dict:
         "human_edits": 0,
         "shipped_qa_status_counts": shipped_status or None,
         "glyph_fix_total": glyph_fix_total,
-        "pipeline": "deterministic-text-layer-v2",
+        "llm_tables_repaired": llm_tables,
+        "tables_qa_review": qa_review_tables,
+        "pipeline": ("deterministic-text-layer-v2+gemini-table-vision"
+                     if _llm_used(out_root)
+                     else "deterministic-text-layer-v2"),
         "gate": ("census verified — question headers, answer-key rows and "
                  "solution headers match in every chapter; no row flagged"),
     }

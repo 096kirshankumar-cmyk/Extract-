@@ -56,7 +56,11 @@ def build_vocab(book) -> tuple:
     pairs: Counter = Counter()
     for pg in range(1, book.total_pages + 1):
         for wr in word_rows(book.page(pg)):
-            toks = [w.text for w in wr if _ALPHA.fullmatch(w.text)]
+            # strip edge punctuation first: "count," / "none." are the
+            # only occurrence of many real words in these books
+            toks = [m.group(0) for w in wr
+                    if (m := _ALPHA.fullmatch(
+                        w.text.strip(".,;:!?()[]{}\"'"))) is not None]
             for t in toks:
                 words[t.lower()] += 1
             for a, b in zip(toks, toks[1:]):
@@ -373,6 +377,7 @@ class LogicalTable:
     llm_fixes: int
     cross_page: bool
     warnings: list
+    qa_tokens: list = field(default_factory=list)
 
     @property
     def source_pages(self) -> list:
@@ -386,13 +391,18 @@ class LogicalTable:
             "source_pages": self.source_pages,
             "merged_continuation": self.cross_page,
             "header_deduplicated": self.header_deduplicated,
-            "extraction": "ruled_grid_geometry",
+            "extraction": ("ruled_grid_geometry+gemini_transcription"
+                           if self.llm_fixes else "ruled_grid_geometry"),
             "validation": {
                 "status": "warnings" if self.warnings else "ok",
                 "line_joins": self.line_joins,
                 "camel_space_fixes": self.camel_fixes,
                 "vocab_space_fixes": self.vocab_fixes,
                 "llm_space_repairs": self.llm_fixes,
+                "table_qa": {
+                    "status": "REVIEW" if self.qa_tokens else "ok",
+                    "suspect_fragments": self.qa_tokens[:12],
+                },
                 "warnings": sorted(set(self.warnings))[:8],
             },
         }
@@ -510,12 +520,56 @@ class ChapterTables:
                 matrix = list(rows)
             else:
                 matrix += rows
+        qa: list = []
+        if self.vocab is not None and matrix:
+            w = self.vocab[0]
+            # The book's own tables split words across spans
+            # ("Scapul"+"a", "Clavicl"+"es"), so full words like
+            # "Scapula" are NOT in the raw-layer vocabulary — they are
+            # correct recombinations, not corruption. A suspect is:
+            #  (a) an adjacent token PAIR whose concatenation is a word
+            #      the book prints >=2x ("destr"+"oying", "do"+"me");
+            #  (b) a single unknown token that splits into two book
+            #      words ("andhas" = "and"+"has", "Usesgamma");
+            #  (c) an unknown >=3-letter token that is no span
+            #      fragment of any book word ("fossaororbital").
+            heads = {t[:k] for t in w for k in range(2, len(t))}
+            tails = {t[-k:] for t in w for k in range(2, len(t))}
+            def _split2(tok):
+                # "Scapula" = printed span "Scapul" + "a" -> legitimate
+                # recombination; "andhas" = "and"+"has" -> lost space
+                for k in range(1, len(tok)):
+                    if w.get(tok[:k], 0) >= 2 and w.get(tok[k:], 0) >= 2:
+                        return "glue"
+                    if w.get(tok[:k], 0) >= 1 and w.get(tok[k:], 0) >= 1 \
+                            and (len(tok[:k]) <= 7 or len(tok[k:]) <= 2):
+                        return "span"
+                return None
+            for r in matrix:
+                for c in r:
+                    toks = re.findall(r"[A-Za-z]{2,}", str(c))
+                    for a, b in zip(toks, toks[1:]):
+                        if a.lower() in _FUNC and b.lower() in _FUNC:
+                            continue        # "in"+"to" is not corruption
+                        if w.get((a + b).lower(), 0) >= 2:
+                            qa += [a, b]
+                    for t in toks:
+                        lo = t.lower()
+                        if w.get(lo, 0):
+                            continue
+                        kind = _split2(lo) if len(lo) >= 3 else "skip"
+                        if kind == "glue":
+                            qa.append(t)          # "andhas", "Usesgamma"
+                        elif kind is None and len(lo) >= 3 \
+                                and lo not in heads and lo not in tails:
+                            qa.append(t)          # "fossaororbital"
         lt = LogicalTable(
             table_id=tid, markdown=_markdown(matrix) if matrix else "",
             chunks=[(p, b) for p, b, _ in chunks],
             header_deduplicated=dedup, line_joins=joins,
             camel_fixes=camels, vocab_fixes=vfix, llm_fixes=lfix,
-            cross_page=len(chunks) > 1, warnings=warns)
+            cross_page=len(chunks) > 1, warnings=warns,
+            qa_tokens=sorted(set(qa))[:12])
         self._lt_cache[ci] = lt
         return lt
 
@@ -534,5 +588,6 @@ class ChapterTables:
             "camel_space_fixes": sum(t.camel_fixes for t in lts),
             "vocab_space_fixes": sum(t.vocab_fixes for t in lts),
             "llm_space_repairs": sum(t.llm_fixes for t in lts),
+            "tables_qa_review": sum(1 for t in lts if t.qa_tokens),
             "tables_with_warnings": sum(1 for t in lts if t.warnings),
         }

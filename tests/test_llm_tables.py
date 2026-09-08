@@ -109,3 +109,26 @@ def test_transcriber_cache_and_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_post", boom)
     fn2 = llm.transcriber(cache_dir=None, key="K")
     assert fn2(FakeBook(), 5, (0, 0, 100, 100)) is None   # fallback
+
+
+def test_merge_llm_structure_suggestion():
+    from collections import Counter
+    words = Counter({"middle": 5, "ear": 5, "inner": 4, "dome": 3,
+                     "roof": 3, "of": 9, "the": 9, "tympanic": 3,
+                     "membrane": 3})
+    # model re-splits cells but content character-identical -> accepted
+    det = [["Roof of middleear", "dome"]]
+    mod = [["Roof", "of middle ear", "dome"]]
+    out, n = llm.merge_llm(det, mod, (words, Counter()))
+    assert out == [["Roof", "of middle ear", "dome"]] and n == 1
+    # content differs (model hallucinates/drops) -> rejected
+    out, n = llm.merge_llm(det, [["Roof of inner ear", "dome"]],
+                           (words, Counter()))
+    assert out == det and n == 0
+    # identical content but unknown token -> rejected
+    out, n = llm.merge_llm(det, [["Roof of middle zyx", "dome"]],
+                           (words, Counter()))
+    assert out == det and n == 0
+    # no vocab -> structure suggestion never accepted
+    out, n = llm.merge_llm(det, mod)
+    assert out == det and n == 0
