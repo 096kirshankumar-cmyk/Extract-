@@ -59,6 +59,7 @@ class ChapterImageReport:
     orphans: list = field(default_factory=list)       # [OrphanImage]
     skipped: list = field(default_factory=list)       # [(page, reason)]
     table_renders: int = 0                            # claims that are table clips
+    tables_suppressed: int = 0     # table boxes not rendered: structured
 
 
 class ImageStore:
@@ -195,7 +196,9 @@ def claim_chapter_images(book: Book, scan: ChapterScan, store: ImageStore,
                          subject: str, chapter_id: str,
                          first_page: int, last_page: int,
                          option_markers: dict,
-                         table_regions: dict | None = None) -> ChapterImageReport:
+                         table_regions: dict | None = None,
+                         structured_table_ids: set | None = None,
+                         ) -> ChapterImageReport:
     rep = ChapterImageReport()
     qblocks = {qn: (s, e) for qn, s, e in scan.question_blocks()}
     sblocks = {qn: (s, e) for qn, s, e in scan.solution_blocks()}
@@ -263,11 +266,19 @@ def claim_chapter_images(book: Book, scan: ChapterScan, store: ImageStore,
     # printed tables: deterministic clip renders, owned by their block.
     # One render per contributing BOX (a cross-page logical table gets
     # one render per page, all tagged with its shared table_id); a box
-    # referenced by several blocks renders once.
+    # referenced by several blocks renders once. A box whose logical
+    # table was SUCCESSFULLY structured (non-empty markdown) is NOT
+    # rendered: the structured table is the asset, an image copy would
+    # duplicate the same content (decision purely from the pipeline's
+    # own table metadata — embedded figures/photos are claimed above
+    # by xref and are untouched).
     rendered_boxes = set()
     for (qn, zone), regions in sorted((table_regions or {}).items()):
         for region in regions:
             pg, bbox, table_id = region
+            if table_id in (structured_table_ids or set()):
+                rep.tables_suppressed += 1
+                continue
             if (pg, tuple(bbox)) in rendered_boxes:
                 continue
             rendered_boxes.add((pg, tuple(bbox)))

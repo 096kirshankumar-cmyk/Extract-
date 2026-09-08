@@ -333,6 +333,22 @@ def main() -> int:
             failures.append(
                 f"{cid}: {placed} placements vs {accounted} accounted "
                 f"({imgs})")
+
+        # 5. TABLE/IMAGE SEPARATION — a region classified TABLE and
+        #    successfully structured must never also ship as an image
+        #    asset (duplicate content). Manifest rows carry table_id
+        #    only for table clip renders; genuine figures have none.
+        structured = {t["table_id"]
+                      for r in list(qrows) + list(srows)
+                      for t in r.get("tables") or []
+                      if (t.get("markdown") or "").strip()}
+        man_rows = rows.get("image_manifest.jsonl") or []
+        dup = sorted({m.get("table_id") for m in man_rows
+                      if m.get("table_id") in structured})
+        if dup:
+            failures.append(
+                f"{cid}: structured tables also shipped as image "
+                f"assets: {dup}")
         stats["questions"] += len(qrows)
         stats["images"] += placed
         stats["tables"] += imgs.get("table_renders", 0)

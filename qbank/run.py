@@ -81,9 +81,14 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
     anomalies = list(scan.anomalies) + list(extra_anoms)
     census = _census_summary(scan, anomalies)
 
+    structured_ids = {t["table_id"]
+                      for rec in records.values()
+                      for t in rec.get("tables") or []
+                      if (t.get("markdown") or "").strip()}
     img_rep = claim_chapter_images(
         book, scan, store, subject, chapter_id,
-        ch.file_start, ch.file_end, option_markers, table_regions)
+        ch.file_start, ch.file_end, option_markers, table_regions,
+        structured_ids)
     image_files_by_q, pages_by_file, manifest = _manifest_and_files(
         img_rep.claims, subject, ch.chapter_no)
 
@@ -110,6 +115,7 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
             "skipped": len(img_rep.skipped),
             "shared_multi_draw": sum(1 for c in img_rep.claims if c.shared),
             "table_renders": img_rep.table_renders,
+            "tables_suppressed": img_rep.tables_suppressed,
             # figures the book stores as N interlocking placements are
             # claimed as one stitched render: the extra N-1 placements
             # per group are accounted for here, not as separate claims

@@ -184,7 +184,7 @@ def test_question_image_claimed(mini_output):
     assert f.exists() and f.stat().st_size > config.MIN_IMAGE_BYTES
 
 
-def test_ruled_table_becomes_markdown_and_render(mini_output):
+def test_ruled_table_becomes_markdown_no_duplicate_render(mini_output):
     out, _ = mini_output
     ch2 = out / "split" / "TST" / "TST-002"
     s_rows = _rows(ch2 / "solutions.jsonl")
@@ -195,9 +195,11 @@ def test_ruled_table_becomes_markdown_and_render(mini_output):
     assert "| Kinase | adds phosphate | cytosol |" in md
     # table prose stays OUT of solution_text (moved to the tables field)
     assert "adds phosphate" not in s_rows[0]["solution_text"]
+    # a successfully structured table is NOT also shipped as an image
     manifest = _rows(ch2 / "image_manifest.jsonl")
     renders = [m for m in manifest if m["type"] == "SOLUTION"]
-    assert len(renders) == 1
+    assert renders == []
     comp = json.loads((ch2 / "chapter_completeness.json").read_text())
-    assert comp["images"]["table_renders"] == 1
+    assert comp["images"]["table_renders"] == 0
+    assert comp["images"]["tables_suppressed"] >= 1
     assert comp["census"]["ok"] is True
