@@ -335,3 +335,74 @@ def transcriber(cache_dir: Path | None = None, model: str | None = None,
             cache.write_text(json.dumps(rows))
         return rows
     return llm
+
+
+VERIFY_PROMPT = """You are re-checking ONE ruled medical-textbook table.
+A previous transcription of this exact image may contain word-fragment
+errors. Suspect fragments: {suspects}
+
+Look at the image again, cell by cell, and return ONLY valid JSON
+(no markdown fences): {{"rows": [["cell", "..."], ...]}} — one inner
+list per table row, one string per visible column, reading order,
+header first. Transcribe every cell EXACTLY as printed: same words,
+symbols, units; empty cell = "". Join words the typesetter broke
+across lines inside a cell; insert the missing space where two words
+are glued. DO NOT correct spellings or terminology, DO NOT add,
+remove, translate or reorder content. Pay special attention to the
+suspect fragments above — decide from the IMAGE whether each is one
+word or two."""
+
+
+def verifier(cache_dir: Path | None = None, model: str | None = None,
+             key: str | None = None):
+    """Second pass for QA-flagged boxes: verify(book, pg, box,
+    suspects) -> rows | None. Same envelope applies downstream, so a
+    hallucinated answer can never reach the output."""
+    key = key or os.environ.get("GEMINI_API_KEY", "")
+    model = model or os.environ.get("QBANK_LLM_MODEL", DEFAULT_MODEL)
+
+    def verify(book, pg: int, box, suspects):
+        cache = None
+        if cache_dir is not None:
+            sig = hashlib.sha1(
+                f"V|{getattr(book.doc, 'name', '')}|{pg}|"
+                f"{tuple(round(v, 1) for v in box)}".encode()).hexdigest()
+            cache = cache_dir / f"{sig}.json"
+            if cache.exists():
+                try:
+                    return json.loads(cache.read_text())
+                except Exception:
+                    pass
+        try:
+            pix = book.doc[pg - 1].get_pixmap(
+                clip=pymupdf.Rect(*box), matrix=pymupdf.Matrix(3, 3))
+            b64 = base64.b64encode(pix.tobytes("png")).decode()
+            payload = {
+                "contents": [{"parts": [
+                    {"inline_data": {"mime_type": "image/png", "data": b64}},
+                    {"text": VERIFY_PROMPT.format(
+                        suspects=", ".join(suspects))}]}],
+                "generationConfig": {"temperature": 0.0,
+                                     "max_output_tokens": 8192},
+            }
+            rows = None
+            for attempt in range(3):
+                resp = _post(API.format(model=model), payload, key)
+                cand = (resp.get("candidates") or [{}])[0]
+                parts = (cand.get("content") or {}).get("parts") or []
+                txt = "".join(pt.get("text", "") for pt in parts).strip()
+                if txt:
+                    txt = re.sub(r"^```(?:json)?|```$", "", txt)
+                    try:
+                        rows = json.loads(txt).get("rows")
+                    except ValueError:
+                        rows = None
+                if rows is not None:
+                    break
+        except Exception:
+            rows = None
+        if cache is not None and rows is not None:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(rows))
+        return rows
+    return verify

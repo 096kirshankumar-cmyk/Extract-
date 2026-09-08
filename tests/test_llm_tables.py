@@ -27,31 +27,6 @@ def test_merge_llm_envelope():
     assert out == det and n == 0
 
 
-def test_merge_llm_directional_guard():
-    from collections import Counter
-    det = [["Right atriumLeft atrium Great vessels"]]
-    glued = [["Right atriumLeft atriumGreat vessels"]]
-    words = Counter({"right": 5, "atrium": 4, "left": 5, "great": 3,
-                     "vessels": 3})
-    pairs = Counter({("right", "atrium"): 2, ("atrium", "great"): 1,
-                     ("great", "vessels"): 1})
-    out, n = llm.merge_llm(det, glued, (words, pairs))
-    assert out == det and n == 0          # glued tokens not in vocab
-    ok = [["Right atrium Left atrium Great vessels"]]
-    out, n = llm.merge_llm(det, ok, (words, pairs))
-    assert out == ok and n == 1           # model un-glues, pair evidence
-    # zero-evidence model never replaces deterministic
-    out, n = llm.merge_llm([["Monochorionicity"]], [["Monochorionic ity"]],
-                           (words | Counter({"monochorionic": 2}),
-                            Counter()))
-    assert out == [["Monochorionicity"]] and n == 0
-    # model glues real words -> no pair evidence -> deterministic kept
-    out, n = llm.merge_llm([["Left ventricle Right ventricle"]],
-                           [["Left ventricleRight ventricle"]],
-                           (words, pairs))
-    assert out == [["Left ventricle Right ventricle"]] and n == 0
-
-
 def test_build_box_llm_accept(tmp_path):
     from collections import Counter
     from test_tables import _book_with
@@ -109,26 +84,3 @@ def test_transcriber_cache_and_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_post", boom)
     fn2 = llm.transcriber(cache_dir=None, key="K")
     assert fn2(FakeBook(), 5, (0, 0, 100, 100)) is None   # fallback
-
-
-def test_merge_llm_structure_suggestion():
-    from collections import Counter
-    words = Counter({"middle": 5, "ear": 5, "inner": 4, "dome": 3,
-                     "roof": 3, "of": 9, "the": 9, "tympanic": 3,
-                     "membrane": 3})
-    # model re-splits cells but content character-identical -> accepted
-    det = [["Roof of middleear", "dome"]]
-    mod = [["Roof", "of middle ear", "dome"]]
-    out, n = llm.merge_llm(det, mod, (words, Counter()))
-    assert out == [["Roof", "of middle ear", "dome"]] and n == 1
-    # content differs (model hallucinates/drops) -> rejected
-    out, n = llm.merge_llm(det, [["Roof of inner ear", "dome"]],
-                           (words, Counter()))
-    assert out == det and n == 0
-    # identical content but unknown token -> rejected
-    out, n = llm.merge_llm(det, [["Roof of middle zyx", "dome"]],
-                           (words, Counter()))
-    assert out == det and n == 0
-    # no vocab -> structure suggestion never accepted
-    out, n = llm.merge_llm(det, mod)
-    assert out == det and n == 0

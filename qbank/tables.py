@@ -214,6 +214,7 @@ class BoxTable:
     camel_fixes: int = 0
     vocab_fixes: int = 0
     llm_fixes: int = 0
+    verify_calls: int = 0
     warnings: list = field(default_factory=list)
 
 
@@ -260,7 +261,50 @@ def _join_decision(prev, nxt, fill_x1, fill_reaches_edge, vocab=None) -> str:
     return "space"
 
 
-def build_box(book, pg: int, box, counts, vocab=None, llm=None) -> BoxTable:
+def qa_suspects(matrix: list, words) -> list:
+    """Suspect word fragments in a cell matrix, judged with the book's
+    own vocabulary. The book's tables split words across spans
+    ("Scapul"+"a"), so full recombinations are NOT suspects:
+      (a) adjacent token PAIR whose join is printed >=2x ("do"+"me");
+      (b) unknown token splitting into two book words ("andhas");
+      (c) unknown >=3-letter token matching no book word/span."""
+    w = words
+    heads = {t[:k] for t in w for k in range(2, len(t))}
+    tails = {t[-k:] for t in w for k in range(2, len(t))}
+
+    def _split2(tok):
+        for k in range(1, len(tok)):
+            if w.get(tok[:k], 0) >= 2 and w.get(tok[k:], 0) >= 2:
+                return "glue"
+            if w.get(tok[:k], 0) >= 1 and w.get(tok[k:], 0) >= 1 \
+                    and (len(tok[:k]) <= 7 or len(tok[k:]) <= 2):
+                return "span"
+        return None
+
+    qa: list = []
+    for r in matrix:
+        for c in r:
+            toks = re.findall(r"[A-Za-z]{2,}", str(c))
+            for a, b in zip(toks, toks[1:]):
+                if a.lower() in _FUNC and b.lower() in _FUNC:
+                    continue        # "in"+"to" is not corruption
+                if w.get((a + b).lower(), 0) >= 2:
+                    qa += [a, b]
+            for t in toks:
+                lo = t.lower()
+                if w.get(lo, 0):
+                    continue
+                kind = _split2(lo) if len(lo) >= 3 else "skip"
+                if kind == "glue":
+                    qa.append(t)
+                elif kind is None and len(lo) >= 3 \
+                        and lo not in heads and lo not in tails:
+                    qa.append(t)
+    return qa
+
+
+def build_box(book, pg: int, box, counts, vocab=None, llm=None,
+              verify=None) -> BoxTable:
     """Cell matrix of ONE ruled box with in-cell line reconstruction."""
     cols, row_ys = grid(book, pg, box)
     lines = _box_lines(book, pg, box)
@@ -360,6 +404,20 @@ def build_box(book, pg: int, box, counts, vocab=None, llm=None) -> BoxTable:
             bt.llm_fixes = n
             bt.rows = matrix
             bt.header = tuple(matrix[0])
+        # second pass: when the QA scan still sees suspect fragments,
+        # send the same box back to the model naming them; the answer
+        # goes through the identical fidelity envelope
+        if verify is not None and vocab is not None:
+            susp = qa_suspects(matrix, vocab[0])
+            if susp:
+                bt.verify_calls += 1
+                lm2 = verify(book, pg, box, sorted(set(susp))[:8])
+                if lm2:
+                    merged2, n2 = merge_llm(matrix, lm2, vocab)
+                    matrix = merged2
+                    bt.llm_fixes += n2
+                    bt.rows = matrix
+                    bt.header = tuple(matrix[0])
     return bt
 
 
@@ -425,11 +483,12 @@ class ChapterTables:
     render region per contributing box."""
 
     def __init__(self, book, chapter_no: int, first_page: int,
-                 last_page: int, vocab=None, llm=None):
+                 last_page: int, vocab=None, llm=None, verify=None):
         self.book = book
         self.chapter_no = chapter_no
         self.vocab = vocab
         self.llm = llm
+        self.verify = verify
         self.boxes = []                 # ordered [(pg, box)]
         for pg in range(first_page, min(last_page, book.total_pages) + 1):
             for bx in sorted(book.page(pg).table_boxes, key=lambda b: b[1]):
@@ -447,7 +506,7 @@ class ChapterTables:
             self._bt_cache[key] = build_box(
                 self.book, pg, box,
                 counts if counts is not None else self._own_counts,
-                self.vocab, self.llm)
+                self.vocab, self.llm, self.verify)
         return self._bt_cache[key]
 
     def _continues(self, i) -> str | None:
@@ -522,47 +581,7 @@ class ChapterTables:
                 matrix += rows
         qa: list = []
         if self.vocab is not None and matrix:
-            w = self.vocab[0]
-            # The book's own tables split words across spans
-            # ("Scapul"+"a", "Clavicl"+"es"), so full words like
-            # "Scapula" are NOT in the raw-layer vocabulary — they are
-            # correct recombinations, not corruption. A suspect is:
-            #  (a) an adjacent token PAIR whose concatenation is a word
-            #      the book prints >=2x ("destr"+"oying", "do"+"me");
-            #  (b) a single unknown token that splits into two book
-            #      words ("andhas" = "and"+"has", "Usesgamma");
-            #  (c) an unknown >=3-letter token that is no span
-            #      fragment of any book word ("fossaororbital").
-            heads = {t[:k] for t in w for k in range(2, len(t))}
-            tails = {t[-k:] for t in w for k in range(2, len(t))}
-            def _split2(tok):
-                # "Scapula" = printed span "Scapul" + "a" -> legitimate
-                # recombination; "andhas" = "and"+"has" -> lost space
-                for k in range(1, len(tok)):
-                    if w.get(tok[:k], 0) >= 2 and w.get(tok[k:], 0) >= 2:
-                        return "glue"
-                    if w.get(tok[:k], 0) >= 1 and w.get(tok[k:], 0) >= 1 \
-                            and (len(tok[:k]) <= 7 or len(tok[k:]) <= 2):
-                        return "span"
-                return None
-            for r in matrix:
-                for c in r:
-                    toks = re.findall(r"[A-Za-z]{2,}", str(c))
-                    for a, b in zip(toks, toks[1:]):
-                        if a.lower() in _FUNC and b.lower() in _FUNC:
-                            continue        # "in"+"to" is not corruption
-                        if w.get((a + b).lower(), 0) >= 2:
-                            qa += [a, b]
-                    for t in toks:
-                        lo = t.lower()
-                        if w.get(lo, 0):
-                            continue
-                        kind = _split2(lo) if len(lo) >= 3 else "skip"
-                        if kind == "glue":
-                            qa.append(t)          # "andhas", "Usesgamma"
-                        elif kind is None and len(lo) >= 3 \
-                                and lo not in heads and lo not in tails:
-                            qa.append(t)          # "fossaororbital"
+            qa = qa_suspects(matrix, self.vocab[0])
         lt = LogicalTable(
             table_id=tid, markdown=_markdown(matrix) if matrix else "",
             chunks=[(p, b) for p, b, _ in chunks],
@@ -588,6 +607,8 @@ class ChapterTables:
             "camel_space_fixes": sum(t.camel_fixes for t in lts),
             "vocab_space_fixes": sum(t.vocab_fixes for t in lts),
             "llm_space_repairs": sum(t.llm_fixes for t in lts),
+            "llm_verify_calls": sum(
+                bt.verify_calls for bt in self._bt_cache.values()),
             "tables_qa_review": sum(1 for t in lts if t.qa_tokens),
             "tables_with_warnings": sum(1 for t in lts if t.warnings),
         }

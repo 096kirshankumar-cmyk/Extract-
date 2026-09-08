@@ -69,14 +69,15 @@ def _manifest_and_files(claims, subject: str, chapter_no: int):
 
 
 def run_chapter(book: Book, subject: str, ch, store: ImageStore,
-                output_root, vocab=None, llm=None) -> dict:
+                output_root, vocab=None, llm=None, verify=None) -> dict:
     chapter_id = f"{subject}-{ch.chapter_no:03d}"
     t0 = time.time()
     scan = scan_chapter(book, ch.file_start, ch.file_end)
     (records, option_markers, table_regions, glyph_audit,
      extra_anoms, table_stats) = build_chapter_records(
         book, scan, ch.chapter_no,
-        page_range=(ch.file_start, ch.file_end), vocab=vocab, llm=llm)
+        page_range=(ch.file_start, ch.file_end), vocab=vocab, llm=llm,
+        verify=verify)
     anomalies = list(scan.anomalies) + list(extra_anoms)
     census = _census_summary(scan, anomalies)
 
@@ -162,10 +163,11 @@ def run_book(pdf_path: str, subject: str, page_offset="auto",
     book.set_offset(int(page_offset))
     from .tables import build_vocab
     vocab = build_vocab(book)   # book-wide evidence for space repairs
-    llm_fn = None
+    llm_fn = verify_fn = None
     from . import llm as llm_mod
     if llm_mod.enabled():
         llm_fn = llm_mod.transcriber(output_root / "llm_cache")
+        verify_fn = llm_mod.verifier(output_root / "llm_cache")
         print(f"[{subject}] Gemini table pass enabled "
               f"(model {os.environ.get('QBANK_LLM_MODEL', llm_mod.DEFAULT_MODEL)})")
     chapters = parse_toc(book)
@@ -189,7 +191,8 @@ def run_book(pdf_path: str, subject: str, page_offset="auto",
         if not force and chapter_id in prog["chapters_done"]:
             print(f"[{subject}] {chapter_id}: already done (resume)")
             continue
-        res = run_chapter(book, subject, ch, store, output_root, vocab, llm_fn)
+        res = run_chapter(book, subject, ch, store, output_root, vocab,
+                          llm_fn, verify_fn)
         results.append(res)
         for c in chapters_out:
             if c["chapter_id"] == chapter_id:
