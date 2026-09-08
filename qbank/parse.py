@@ -114,7 +114,7 @@ def _split_stem_options(lines: list[Line]):
 def build_chapter_records(book: Book, scan: ChapterScan,
                           chapter_no: int,
                           page_range: tuple | None = None,
-                          vocab=None
+                          vocab=None, llm=None
                           ) -> tuple[dict, dict, dict, Counter, list, dict]:
     """Returns (records, option_markers, table_regions, glyph_audit,
     extra_anomalies, table_stats).
@@ -137,7 +137,7 @@ def build_chapter_records(book: Book, scan: ChapterScan,
     last_pg = (page_range[1] if page_range else
                (scan.chapter_end[0] if scan.chapter_end
                 else book.total_pages))
-    ctables = ChapterTables(book, chapter_no, first_pg, last_pg, vocab)
+    ctables = ChapterTables(book, chapter_no, first_pg, last_pg, vocab, llm)
     key_map = {r.q_no: r for r in scan.key_rows}
     sol_map = dict(scan.solution_headers)
     qhdr_map = dict(scan.question_headers)

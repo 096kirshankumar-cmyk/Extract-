@@ -36,6 +36,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from . import glyphs
+from .llm import merge_llm
 
 # camel boundary: >=2 lowercase, then an uppercase that starts a
 # lowercase run. Never splits pH / IgG / mOsm / B12 / VLDL.
@@ -208,6 +209,7 @@ class BoxTable:
     line_joins: int = 0
     camel_fixes: int = 0
     vocab_fixes: int = 0
+    llm_fixes: int = 0
     warnings: list = field(default_factory=list)
 
 
@@ -254,7 +256,7 @@ def _join_decision(prev, nxt, fill_x1, fill_reaches_edge, vocab=None) -> str:
     return "space"
 
 
-def build_box(book, pg: int, box, counts, vocab=None) -> BoxTable:
+def build_box(book, pg: int, box, counts, vocab=None, llm=None) -> BoxTable:
     """Cell matrix of ONE ruled box with in-cell line reconstruction."""
     cols, row_ys = grid(book, pg, box)
     lines = _box_lines(book, pg, box)
@@ -346,6 +348,14 @@ def build_box(book, pg: int, box, counts, vocab=None) -> BoxTable:
             matrix.append(row)
     bt.rows = matrix
     bt.header = tuple(matrix[0]) if matrix else ()
+    if llm is not None and matrix:
+        lm = llm(book, pg, box)
+        if lm:
+            merged, n = merge_llm(matrix, lm)
+            matrix = merged
+            bt.llm_fixes = n
+            bt.rows = matrix
+            bt.header = tuple(matrix[0])
     return bt
 
 
@@ -360,6 +370,7 @@ class LogicalTable:
     line_joins: int
     camel_fixes: int
     vocab_fixes: int
+    llm_fixes: int
     cross_page: bool
     warnings: list
 
@@ -381,6 +392,7 @@ class LogicalTable:
                 "line_joins": self.line_joins,
                 "camel_space_fixes": self.camel_fixes,
                 "vocab_space_fixes": self.vocab_fixes,
+                "llm_space_repairs": self.llm_fixes,
                 "warnings": sorted(set(self.warnings))[:8],
             },
         }
@@ -403,10 +415,11 @@ class ChapterTables:
     render region per contributing box."""
 
     def __init__(self, book, chapter_no: int, first_page: int,
-                 last_page: int, vocab=None):
+                 last_page: int, vocab=None, llm=None):
         self.book = book
         self.chapter_no = chapter_no
         self.vocab = vocab
+        self.llm = llm
         self.boxes = []                 # ordered [(pg, box)]
         for pg in range(first_page, min(last_page, book.total_pages) + 1):
             for bx in sorted(book.page(pg).table_boxes, key=lambda b: b[1]):
@@ -424,7 +437,7 @@ class ChapterTables:
             self._bt_cache[key] = build_box(
                 self.book, pg, box,
                 counts if counts is not None else self._own_counts,
-                self.vocab)
+                self.vocab, self.llm)
         return self._bt_cache[key]
 
     def _continues(self, i) -> str | None:
@@ -480,13 +493,14 @@ class ChapterTables:
         self._counter += 1
         tid = f"{self.chapter_no:03d}-T{self._counter:02d}"
         chunks = self._chains[ci]
-        matrix, joins, camels, vfix, warns = [], 0, 0, 0, []
+        matrix, joins, camels, vfix, lfix, warns = [], 0, 0, 0, 0, []
         dedup = False
         for k, (cpg, cbox, mode) in enumerate(chunks):
             bt = self._bt(cpg, cbox, counts)
             joins += bt.line_joins
             camels += bt.camel_fixes
             vfix += bt.vocab_fixes
+            lfix += bt.llm_fixes
             warns += bt.warnings
             rows = bt.rows
             if k and mode == "dedup" and rows and rows[0] == matrix[0]:
@@ -500,7 +514,7 @@ class ChapterTables:
             table_id=tid, markdown=_markdown(matrix) if matrix else "",
             chunks=[(p, b) for p, b, _ in chunks],
             header_deduplicated=dedup, line_joins=joins,
-            camel_fixes=camels, vocab_fixes=vfix,
+            camel_fixes=camels, vocab_fixes=vfix, llm_fixes=lfix,
             cross_page=len(chunks) > 1, warnings=warns)
         self._lt_cache[ci] = lt
         return lt
@@ -519,5 +533,6 @@ class ChapterTables:
             "line_joins": sum(t.line_joins for t in lts),
             "camel_space_fixes": sum(t.camel_fixes for t in lts),
             "vocab_space_fixes": sum(t.vocab_fixes for t in lts),
+            "llm_space_repairs": sum(t.llm_fixes for t in lts),
             "tables_with_warnings": sum(1 for t in lts if t.warnings),
         }

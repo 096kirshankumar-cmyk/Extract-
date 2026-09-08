@@ -167,7 +167,16 @@ dashboard binds it and Railway exposes the public URL automatically.
    render of their union bbox (pixel-exact stitch, seams and vector
    overlays included) instead of cut fragments — recorded in
    `chapter_completeness.json` as `merged_placements`.
-7. **Gate** (`qbank/export.py`) — the zip is built only when every
+7. **Optional Gemini table-text pass** (`qbank/llm.py`) — with
+   `GEMINI_API_KEY` set, each ruled box is also rendered and sent to
+   Gemini (default model `gemini-3.5-flash-lite`, override with
+   `QBANK_LLM_MODEL`) asking only for cell transcription. A model cell
+   is accepted ONLY when it is character-identical to the
+   deterministic cell after whitespace removal — the model may
+   re-space, never re-word; shape mismatches, API errors or a missing
+   key fall back to the deterministic matrix. Responses cached under
+   `<output>/llm_cache/`. Without a key the pipeline stays zero-LLM.
+8. **Gate** (`qbank/export.py`) — the zip is built only when every
    chapter's census is contiguous and no row is `REVIEW_NEEDED`.
 
 **Provenance.** Every text field ships as `TEXT_LAYER` because v2 reads
