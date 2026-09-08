@@ -67,10 +67,32 @@ def _norm(t: str) -> str:
     return re.sub(r"\s+", "", t or "").lower()
 
 
-def merge_llm(det_rows: list, llm_rows: list) -> tuple:
-    """Apply the fidelity envelope; return (rows, n_model_repairs)."""
+def _score(t: str, words, pairs) -> int:
+    """Plausibility of one spacing of a cell: -1 (disqualified) if any
+    alphabetic token is not a word the book contains at least twice.
+    Single occurrences are excluded deliberately: the vocabulary is
+    built from the raw layer, so a glued artifact printed in exactly
+    one table cell ("rheniumThe", "tandemOne") is itself in it with
+    count 1 — real words recur. Else the score is the count of
+    adjacent word pairs the book prints with that spacing."""
+    toks = [x.lower() for x in re.findall(r"[A-Za-z]{3,}", t)]
+    for tok in toks:
+        if words.get(tok, 0) < 2:
+            return -1
+    return sum(pairs.get(p, 0) for p in zip(toks, toks[1:]))
+
+
+def merge_llm(det_rows: list, llm_rows: list, vocab=None) -> tuple:
+    """Fidelity envelope: same characters (whitespace-insensitive),
+    then the deterministic cell is replaced only when the model cell
+    is strictly more plausible under the book's own vocabulary —
+    a candidate containing a non-word token ("TungstenThe",
+    "atriumLeft") is disqualified outright; ties keep deterministic."""
     if not isinstance(llm_rows, list) or len(llm_rows) != len(det_rows):
         return det_rows, 0
+    words = pairs = None
+    if vocab is not None:
+        words, pairs = vocab
     out, nfix = [], 0
     for drow, lrow in zip(det_rows, llm_rows):
         if not isinstance(lrow, list) or len(lrow) != len(drow):
@@ -79,8 +101,18 @@ def merge_llm(det_rows: list, llm_rows: list) -> tuple:
         for d, l in zip(drow, lrow):
             l = str(l)
             lj = " ".join(l.split())
+            take = False
             if lj != d and _norm(l) == _norm(d):
-                newrow.append(lj)      # same characters, better spacing
+                if words is None:
+                    take = True
+                else:
+                    # model must show POSITIVE book evidence (>=1 printed
+                    # adjacent pair) AND beat the deterministic score;
+                    # 0-evidence model output never replaces it
+                    sd, sm = _score(d, words, pairs), _score(lj, words, pairs)
+                    take = sm >= 1 and sm > sd
+            if take:
+                newrow.append(lj)
                 nfix += 1
             else:
                 newrow.append(d)
@@ -89,12 +121,20 @@ def merge_llm(det_rows: list, llm_rows: list) -> tuple:
 
 
 def _post(url: str, payload: dict, key: str) -> dict:
+    import time as _time
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json",
                  "x-goog-api-key": key}, method="POST")
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.loads(r.read())
+    for attempt in (1, 2, 3):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:   # retry throttling/server errs
+            if e.code in (429, 500, 503) and attempt < 3:
+                _time.sleep(1.5 * attempt)
+                continue
+            raise
 
 
 def _cache_path(cache_dir: Path, book, pg: int, box) -> Path:
@@ -127,7 +167,8 @@ def transcriber(cache_dir: Path | None = None, model: str | None = None,
                 "contents": [{"parts": [
                     {"inline_data": {"mime_type": "image/png", "data": b64}},
                     {"text": PROMPT}]}],
-                "generationConfig": {"temperature": 0.0},
+                "generationConfig": {"temperature": 0.0,
+                                     "max_output_tokens": 8192},
             }, key)
             txt = resp["candidates"][0]["content"]["parts"][0]["text"]
             txt = re.sub(r"^```(?:json)?|```$", "", txt.strip())

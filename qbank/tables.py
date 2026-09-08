@@ -351,7 +351,7 @@ def build_box(book, pg: int, box, counts, vocab=None, llm=None) -> BoxTable:
     if llm is not None and matrix:
         lm = llm(book, pg, box)
         if lm:
-            merged, n = merge_llm(matrix, lm)
+            merged, n = merge_llm(matrix, lm, vocab)
             matrix = merged
             bt.llm_fixes = n
             bt.rows = matrix

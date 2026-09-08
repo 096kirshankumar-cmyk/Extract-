@@ -27,6 +27,31 @@ def test_merge_llm_envelope():
     assert out == det and n == 0
 
 
+def test_merge_llm_directional_guard():
+    from collections import Counter
+    det = [["Right atriumLeft atrium Great vessels"]]
+    glued = [["Right atriumLeft atriumGreat vessels"]]
+    words = Counter({"right": 5, "atrium": 4, "left": 5, "great": 3,
+                     "vessels": 3})
+    pairs = Counter({("right", "atrium"): 2, ("atrium", "great"): 1,
+                     ("great", "vessels"): 1})
+    out, n = llm.merge_llm(det, glued, (words, pairs))
+    assert out == det and n == 0          # glued tokens not in vocab
+    ok = [["Right atrium Left atrium Great vessels"]]
+    out, n = llm.merge_llm(det, ok, (words, pairs))
+    assert out == ok and n == 1           # model un-glues, pair evidence
+    # zero-evidence model never replaces deterministic
+    out, n = llm.merge_llm([["Monochorionicity"]], [["Monochorionic ity"]],
+                           (words | Counter({"monochorionic": 2}),
+                            Counter()))
+    assert out == [["Monochorionicity"]] and n == 0
+    # model glues real words -> no pair evidence -> deterministic kept
+    out, n = llm.merge_llm([["Left ventricle Right ventricle"]],
+                           [["Left ventricleRight ventricle"]],
+                           (words, pairs))
+    assert out == [["Left ventricle Right ventricle"]] and n == 0
+
+
 def test_build_box_llm_accept(tmp_path):
     from collections import Counter
     from test_tables import _book_with
