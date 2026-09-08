@@ -182,7 +182,11 @@ def api_status():
     zp = config.OUTPUT_ROOT / "final_export.zip"
     zinfo, receipt = None, None
     if zp.exists():
+        subs = sorted(p.name for p in config.SUBJECTS_DIR.iterdir()
+                      if p.is_dir()) if config.SUBJECTS_DIR.is_dir() else []
         zinfo = {"bytes": zp.stat().st_size,
+                 "name": ("_".join(subs) + "_final_export.zip") if subs
+                         else "final_export.zip",
                  "mtime": time.strftime(
                      "%Y-%m-%d %H:%M:%S",
                      time.localtime(zp.stat().st_mtime))}
@@ -203,8 +207,11 @@ def download():
     zp = config.OUTPUT_ROOT / "final_export.zip"
     if not zp.exists():
         return jsonify(ok=False, error="no export yet — run a book"), 404
-    return send_file(zp, as_attachment=True,
-                     download_name="final_export.zip")
+    subs = sorted(p.name for p in config.SUBJECTS_DIR.iterdir()
+                  if p.is_dir()) if config.SUBJECTS_DIR.is_dir() else []
+    name = ("_".join(subs) + "_final_export.zip") if subs \
+        else "final_export.zip"
+    return send_file(zp, as_attachment=True, download_name=name)
 
 
 @app.get("/healthz")
@@ -332,7 +339,7 @@ async function refresh(){
       g.chapters} chapter(s) verified on disk</span>`;
  $('zip').innerHTML=st.zip
   ? `<div class="row"><button onclick="location='/download'">
-      &#11015; Download final_export.zip</button>
+      &#11015; Download ${st.zip.name || 'final_export.zip'}</button>
      <span class="hint">${mb(st.zip.bytes)} &middot; built ${st.zip.mtime}${
       st.receipt?` &middot; ${st.receipt.chapters} chapters &middot; ${
       JSON.stringify(st.receipt.shipped_qa_status_counts)}`:""}</span>
