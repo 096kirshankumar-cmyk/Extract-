@@ -82,6 +82,26 @@ def _score(t: str, words, pairs) -> int:
     return sum(pairs.get(p, 0) for p in zip(toks, toks[1:]))
 
 
+def _harmonize(t: str, words) -> str:
+    """Map a model spelling variant onto the book's own spelling when
+    the book prints the de-varianted form ("tumour"->"tumor" when the
+    book has "tumor"): document-internal evidence only. Keeps the
+    character-identical envelope honest across British/American
+    variants without ever inventing a spelling."""
+    if words is None:
+        return t
+
+    def sub(m):
+        w = m.group(0)
+        if "ou" in w.lower():
+            d = re.sub(r"ou", "o", w)
+            if d != w and words.get(d.lower(), 0) > words.get(w.lower(), 0):
+                return d
+        return w
+
+    return re.sub(r"[A-Za-z]+", sub, t)
+
+
 def _content(rows) -> str:
     """All cell text concatenated, whitespace removed, lowercased."""
     return re.sub(r"\s+", "", "".join(
@@ -105,7 +125,7 @@ def _tokruns(toks: list) -> list:
     return runs
 
 
-def _block_ok(cdt: list, cmt: list, words) -> bool:
+def _block_ok(cdt: list, cmt: list, words, pairs=None) -> bool:
     """Judge ONE spacing change (character-identical strings, so the
     alphabetic offsets of both sides are comparable). Every model
     token must be justified:
@@ -155,14 +175,63 @@ def _block_ok(cdt: list, cmt: list, words) -> bool:
                 return False
             continue
         if words.get(m, 0) >= 2:
+            # a fragment-split of an established det word is a
+            # regression ("surface" -> "su rface"): reject unless every
+            # model piece covering that det word is itself common
+            # ("retractionnot" -> "retraction not" stays allowed)
+            for ds, de, dm, _o, _f in D:
+                if ds <= ms and de >= me and len(dm) > len(m) \
+                        and words.get(dm, 0) >= 2 \
+                        and (dm.startswith(m) or dm.endswith(m)):
+                    # splitting an established det word is accepted
+                    # only when the book itself prints the split
+                    # spacing somewhere ("retraction not"); a model
+                    # fragment-split of a real word ("adja cent") is
+                    # a transcription glitch and must lose
+                    sib = [t for _s, _e, t, _o2, _f2 in M
+                           if _s < de and _e > ds]
+                    printed = pairs is not None and any(
+                        pairs.get((sib[i], sib[i + 1]), 0) >= 1
+                        for i in range(len(sib) - 1))
+                    if not printed:
+                        return False
+            # reverse fusion: the model glues det words the book
+            # prints spaced. Reject only with evidence that the spaced
+            # form is the book's real spelling: the pair printed >=2x
+            # ("the incus"), or every part very common ("su rface"
+            # never). A rare glued WORD the book prints ("dome" from
+            # "do me") still wins.
+            ov2 = [r for r in D if r[0] < me and r[1] > ms]
+            if len(ov2) >= 2 and words.get(m, 0) <= 2:
+                if pairs is not None and pairs.get(
+                        tuple(r[2] for r in ov2[:2]), 0) >= 2:
+                    return False
+                if all(words.get(r[2], 0) >= 5 for r in ov2):
+                    return False
             continue
         ov = [r for r in D if r[0] < me and r[1] > ms]
         if not ov:
             return False
-        if len(ov) >= 2 and ov[0][0] == ms and ov[-1][1] == me \
-                and all(words.get(r[2], 0) < 2 for r in ov) \
-                and not any(r[4] and r[3][0].isupper() for r in ov[1:]):
-            continue                          # fragment merge
+        if len(ov) >= 1 and all(words.get(r[2], 0) < 2 for r in ov):
+            # the model re-words a run of rare det fragments: its
+            # tokens must tile the fragment span exactly and every
+            # tiling token must be an established book word (or the
+            # single joined form, "osteocal"+"cin" -> "osteocalcin")
+            span_s, span_e = ov[0][0], ov[-1][1]
+            tile = sorted((r[0], r[1], r[2]) for r in M
+                          if r[0] < span_e and r[1] > span_s)
+            pos, ok = span_s, bool(tile)
+            for ts, te, tt in tile:
+                if ts != pos:
+                    ok = False
+                    break
+                pos = te
+                if words.get(tt, 0) < 2:
+                    ok = (te == span_e and len(tile) == 1)
+            if ok and pos == span_e \
+                    and not any(r[4] and r[3][0].isupper()
+                                for r in ov[1:]):
+                continue                      # fragment rewording
         if len(ov) == 1 and ov[0][0] <= ms and ov[0][1] >= me \
                 and words.get(ov[0][2], 0) < 2 and len(m) >= 4:
             sib = [t for _s, _e, t, _o, _f in M
@@ -171,11 +240,21 @@ def _block_ok(cdt: list, cmt: list, words) -> bool:
                    and (len(t) > 3 or words.get(t, 0) >= 50)
                    for t in sib):
                 continue                      # un-glue of a rare blob
+        # multi-way un-glue of a blob printed nowhere: every model
+        # piece covering the blob must itself be a common book word
+        # ("Intracranialintradural..." -> "Intracranial intradural
+        # ..."). "calcifications" -> "calcific ations" fails: "ations"
+        # is printed nowhere.
+        if len(ov) == 1 and words.get(ov[0][2], 0) == 0:
+            sib = [t for _s, _e, t, _o, _f in M
+                   if _s < ov[0][1] and _e > ov[0][0]]
+            if len(sib) >= 2 and all(words.get(t, 0) >= 2 for t in sib):
+                continue
         return False
     return True
 
 
-def _respaced(d: str, lj: str, words) -> str:
+def _respaced(d: str, lj: str, words, pairs=None) -> str:
     """Best spacing of one cell: per diff block, take the model's
     spacing when _block_ok accepts it, else keep the deterministic
     one. A model glitch in one corner of a cell ("themalleus") can
@@ -195,7 +274,7 @@ def _respaced(d: str, lj: str, words) -> str:
             cd = "".join(cdt)
             cmt = [t for _ws, t in mw[j1:j2]]
             cm = "".join(cmt)
-            if cd == cm and _block_ok(cdt, cmt, words):
+            if cd == cm and _block_ok(cdt, cmt, words, pairs):
                 seg = "".join(ws + t for ws, t in mw[j1:j2])
                 if seg and dw[i1:i2]:
                     seg = dw[i1][0] + seg[len(mw[j1][0]):]
@@ -225,6 +304,13 @@ def merge_llm(det_rows: list, llm_rows: list, vocab=None) -> tuple:
     words = pairs = None
     if vocab is not None:
         words, pairs = vocab
+
+        def hrow(r):
+            if isinstance(r, list):
+                return [hrow(c) for c in r]
+            return _harmonize(str(r), words)
+
+        llm_rows = [hrow(r) for r in llm_rows]
     det_shape = [len(r) for r in det_rows]
     llm_shape = [len(r) if isinstance(r, list) else -1 for r in llm_rows]
     if det_shape != llm_shape:
@@ -251,7 +337,7 @@ def merge_llm(det_rows: list, llm_rows: list, vocab=None) -> tuple:
                 if words is None:
                     take = True
                 else:
-                    lj = _respaced(d, lj, words)
+                    lj = _respaced(d, lj, words, pairs)
                     take = lj != d
             if take:
                 newrow.append(lj)
@@ -350,7 +436,9 @@ across lines inside a cell; insert the missing space where two words
 are glued. DO NOT correct spellings or terminology, DO NOT add,
 remove, translate or reorder content. Pay special attention to the
 suspect fragments above — decide from the IMAGE whether each is one
-word or two."""
+word or two; a suspect next to a complementary fragment may together
+form ONE recognised medical term (e.g. a word the publisher split
+mid-line) — join it only when the combined form is a real term."""
 
 
 def verifier(cache_dir: Path | None = None, model: str | None = None,
@@ -364,9 +452,11 @@ def verifier(cache_dir: Path | None = None, model: str | None = None,
     def verify(book, pg: int, box, suspects):
         cache = None
         if cache_dir is not None:
+            # suspects shape the prompt, so they shape the cache key
             sig = hashlib.sha1(
-                f"V|{getattr(book.doc, 'name', '')}|{pg}|"
-                f"{tuple(round(v, 1) for v in box)}".encode()).hexdigest()
+                f"V3|{getattr(book.doc, 'name', '')}|{pg}|"
+                f"{tuple(round(v, 1) for v in box)}|"
+                f"{tuple(suspects)}".encode()).hexdigest()
             cache = cache_dir / f"{sig}.json"
             if cache.exists():
                 try:

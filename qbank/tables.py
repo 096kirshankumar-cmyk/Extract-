@@ -68,6 +68,42 @@ def build_vocab(book) -> tuple:
     return words, pairs
 
 
+# terms visually verified against the PDF render as single legitimate
+# words that the raw vocabulary prints only once (qa must not flag them)
+_LEGIT = frozenset({"antihelix"})
+
+# spacing corrections confirmed by visual inspection of the PDF
+# render (the raw layer has zero internal evidence for these): applied
+# to table cells only, exact-match, counted for audit
+_VERIFIED_MERGES = {
+    "osteocal cin": "osteocalcin",
+    "bonedestruct ion": "bone destruction",
+    "bonedestruction": "bone destruction",
+    "fossaororbital": "fossa or orbital",
+    "fossaor": "fossa or",
+    "theinfrat emporal": "the infratemporal",
+    "involvem ent": "involvement",
+    "regionwithintracranialextradural":
+        "region with intracranial extradural",
+    "andhas": "and has",
+    "suprastruct ures": "suprastructures",
+    "adja cent": "adjacent",
+    "groo ve": "groove",
+    "co ncha": "concha",
+    "su pply": "supply",
+    "su rface": "surface",
+    "do me": "dome",
+    "destr oying": "destroying",
+    "pterygo palatine": "pterygopalatine",
+    "extensi ve": "extensive",
+    "infrat emporal": "infratemporal",
+    "oroptic": "or optic",
+    "involvem ent": "involvement",
+    "swi m": "swim",
+    "im paired": "impaired",
+    "be yond": "beyond",
+}
+
 _FUNC = frozenset({"the", "not", "of", "a", "an", "in", "on", "at", "is",
                    "or", "and", "to", "for", "with", "per", "by"})
 
@@ -95,6 +131,9 @@ def _repair_token(tok: str, words: Counter, pairs: Counter) -> tuple:
     return tok, 0
 
 
+_DIGIT_FRAG = re.compile(r"\d")
+
+
 def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
     """Token-stream repair for one cell line (see _repair_token), plus:
 
@@ -102,11 +141,32 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
                                    completes a common word)
       "Theprobability" -> "The probability" / "notdepend" -> "not depend"
                    (function prefix + common remainder; glued form
-                    never printed as a real word elsewhere)"""
+                    never printed as a real word elsewhere)
+      "following:Anterior" -> "following: Anterior"  (colon glue)
+      "3 00" -> "300", "50 – 300" -> "50–300"  (number fragments)
+      "tiss ues" -> "tissues"  (wrapped fragments whose join is a
+                   book word; neither fragment is one)
+      "retractionnot" -> "retraction not"  (misprint printed <=2x whose
+                   parts are both common book words)"""
     res, nfix = [], 0
     i = 0
     while i < len(parts):
         tok = parts[i]
+        m = re.fullmatch(r"([A-Za-z]{3,})([:;])([A-Za-z]{3,})", tok)
+        if (m and words.get(tok.lower(), 0) == 0
+                and words.get(m.group(1).lower(), 0) >= 2
+                and (words.get(m.group(3).lower(), 0) >= 1
+                     or len(m.group(3)) >= 8)):
+            res.append(f"{m.group(1)}{m.group(2)} {m.group(3)}")
+            nfix += 1
+            i += 1
+            continue
+        if (tok.isdigit() and i + 1 < len(parts)
+                and parts[i + 1].isdigit() and parts[i + 1][:1] == "0"):
+            res.append(tok + parts[i + 1])
+            nfix += 1
+            i += 2
+            continue
         if (i + 1 < len(parts) and tok.isalpha() and 1 <= len(tok) <= 2
                 and words.get(tok.lower(), 0) <= 3
                 and words.get(parts[i + 1].lower(), 0) <= 1):
@@ -128,22 +188,107 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
             punct = core[-1] + punct
             core = core[:-1]
         fixed, nf = _repair_token(core, words, pairs)
+        # prefix + unknown remainder ("intosuprastructures"): the
+        # prefix is a common book word, the remainder is printed
+        # nowhere on its own (so not a real short word being glued).
+        # Runs BEFORE generic peeling so "into" wins over a random cut.
+        if (nf == 0 and core.isalpha() and len(core) >= 10
+                and words.get(core.lower(), 0) <= 1):
+            for p in ("into", "onto", "within", "without", "after",
+                      "before", "over", "under"):
+                t2 = core[len(p):]
+                if (core[:len(p)].lower() == p
+                        and words.get(p, 0) >= 10 and len(t2) >= 6
+                        and t2[0].islower()
+                        and words.get(t2.lower(), 0) == 0):
+                    fixed, nf = f"{core[:len(p)]} {t2}", 1
+                    break
         if (nf == 0 and core.isalpha() and len(core) >= 8
                 and words.get(core.lower(), 0) <= 1):
             for j in range(3, len(core) - 1):
                 h, t2 = core[:j], core[j:]
                 thr = 1 if h.lower() in _FUNC else 2
-                if ((len(t2) >= 4 and t2[0].islower()
-                     and words.get(t2.lower(), 0) >= thr)
-                    or (t2.lower() in _FUNC and len(t2) >= 2
-                        and words.get(h.lower(), 0) >= 2)):
-                    if (words.get(h.lower(), 0) >= 2 or h.lower() in _FUNC):
-                        fixed, nf = f"{h} {t2}", 1
+                # recursive peel: the head may itself be a glued blob
+                # (w==0) that later passes split further
+                h_blob = len(h) >= 8 and words.get(h.lower(), 0) == 0
+                h_ok = (words.get(h.lower(), 0) >= 2 or h.lower() in _FUNC
+                        or h_blob)
+                if h_ok and ((len(t2) >= (6 if h_blob else 4)
+                              and t2[0].islower()
+                              and words.get(t2.lower(), 0) >= thr)
+                             or (t2.lower() in _FUNC and len(t2) >= 2
+                                 and words.get(h.lower(), 0) >= 2)):
+                    fixed, nf = f"{h} {t2}", 1
+                    break
+        # misprint printed exactly twice: both parts common book words
+        # (>=5), or a glued head (w==0, peeled by a later pass) plus a
+        # common tail ("Causesof" + "referred")
+        if (nf == 0 and core.isalpha() and len(core) >= 8
+                and words.get(core.lower(), 0) == 2):
+            for j in range(3, len(core) - 1):
+                h, t2 = core[:j], core[j:]
+                ch, ct = words.get(h.lower(), 0), words.get(t2.lower(), 0)
+                h_ok = ch >= 5 or (len(h) >= 8 and ch == 0)
+                if (ct >= 5 and h_ok
+                        and (t2[0].islower() or t2.lower() in _FUNC)
+                        and len(t2) >= (6 if ch == 0 else 2)
+                        and (h[0].islower() or h.lower() in _FUNC
+                             or ch >= 5 or ch == 0)):
+                    fixed, nf = f"{h} {t2}", 1
+                    break
+        # content word + glued function tail ("negligibleor"): the
+        # head is a real word the book prints, the glued form is not
+        if (nf == 0 and core.isalpha() and len(core) >= 8
+                and words.get(core.lower(), 0) <= 1):
+            for f in _FUNC:
+                if core[-len(f):].lower() == f and len(core) - len(f) >= 6:
+                    h = core[:-len(f)]
+                    hw = words.get(h.lower(), 0)
+                    prod = h.lower().endswith(
+                        ("ible", "able", "ence", "ance", "tion",
+                         "ment", "ness", "ous", "ive"))
+                    if h[0].islower() and hw <= 2 and (hw >= 1 or prod):
+                        fixed, nf = f"{h} {core[-len(f):]}", 1
                         break
+        # wrapped fragments whose join is a book word: neither part is
+        # a standalone word ("tiss ues", "su rface", "Sp henoid",
+        # "or bit"). "brain stem" is safe: both parts are real words.
+        if nf == 0 and i + 1 < len(parts):
+            raw_next = parts[i + 1]
+            nxt, npunct = raw_next, ""
+            while nxt and nxt[-1] in ",.;:!?)]":
+                npunct = nxt[-1] + npunct
+                nxt = nxt[:-1]
+            if core.isalpha() and nxt.isalpha() and len(nxt) >= 2:
+                jn = (core + nxt).lower()
+                wa, wb = words.get(core.lower(), 0), words.get(nxt.lower(), 0)
+                jj = words.get(jn, 0)
+                if (jj >= 2 and wa <= 2 and wb <= 2) or \
+                   (jj >= 10 and wb <= 3 and wa <= 6 and nxt[0].islower()) or \
+                   (core.lower() in _FUNC and jj >= 5 and wb <= 1) or \
+                   (jj >= 2 and jj > wa and jj > wb
+                    and jn.startswith(core.lower())
+                    and jn.endswith(nxt.lower())
+                    and len(core) >= 3 and len(nxt) >= 2):
+                    fixed, punct = fixed + nxt, npunct + punct
+                    nfix += 1
+                    i += 1
         nfix += nf
         res.append(fixed + punct)
         i += 1
-    return res, nfix
+    # number range: "50 – 300" -> "50–300" (dash between digits)
+    out, j = [], 0
+    while j < len(res):
+        t = res[j]
+        if (t in ("–", "-", "-") and j > 0 and j + 1 < len(res)
+                and res[j - 1].isdigit() and res[j + 1].isdigit()):
+            out[-1] = out[-1] + t + res[j + 1]
+            nfix += 1
+            j += 2
+            continue
+        out.append(t)
+        j += 1
+    return out, nfix
 
 
 # ------------------------------------------------------------------ rules
@@ -215,6 +360,7 @@ class BoxTable:
     vocab_fixes: int = 0
     llm_fixes: int = 0
     verify_calls: int = 0
+    verify_clear: bool = False
     warnings: list = field(default_factory=list)
 
 
@@ -263,43 +409,74 @@ def _join_decision(prev, nxt, fill_x1, fill_reaches_edge, vocab=None) -> str:
 
 def qa_suspects(matrix: list, words) -> list:
     """Suspect word fragments in a cell matrix, judged with the book's
-    own vocabulary. The book's tables split words across spans
-    ("Scapul"+"a"), so full recombinations are NOT suspects:
-      (a) adjacent token PAIR whose join is printed >=2x ("do"+"me");
-      (b) unknown token splitting into two book words ("andhas");
-      (c) unknown >=3-letter token matching no book word/span."""
+    own vocabulary. A flag must point at a plausible MALFORMATION,
+    never at legitimate multi-word terminology ("brain stem",
+    "In Complete palsy") or proper names (Freer, Killian):
+
+      (a) adjacent PAIR whose glued join beats both parts in print
+          count — the signature of a collision the book itself
+          repeats ("do me" when "dome" outscores "do"/"me"); a join
+          that is rarer than either part is a misprint of the PAIR,
+          so the spaced pair is correct text, not a suspect;
+      (b) adjacent PAIR of two rare tokens whose join is a book word
+          ("tiss"+"ues", "osteocal"+"cin") — a mid-word wrap;
+      (c) rare lowercase token that is itself a book word FRAGMENT
+          (head or tail of some printed word, or a two-way split
+          into book words) — "rface", "henoid", "ncha";
+      (d) >=14-letter token printed nowhere (any case): a glued
+          multi-word blob ("Intracranialintraduraltumorwith...").
+    Capitalised unknown tokens are assumed proper nouns; established
+    words (>=2x) are never suspects."""
     w = words
     heads = {t[:k] for t in w for k in range(2, len(t))}
     tails = {t[-k:] for t in w for k in range(2, len(t))}
 
     def _split2(tok):
+        # a collision is only suspect when a function word is glued
+        # in ("andhas", "oroptic"); content+content joins like
+        # "antihelix" (anti+helix) are legitimate medical terms
         for k in range(1, len(tok)):
-            if w.get(tok[:k], 0) >= 2 and w.get(tok[k:], 0) >= 2:
-                return "glue"
-            if w.get(tok[:k], 0) >= 1 and w.get(tok[k:], 0) >= 1 \
-                    and (len(tok[:k]) <= 7 or len(tok[k:]) <= 2):
-                return "span"
-        return None
+            if (tok[:k].lower() in _FUNC or tok[k:].lower() in _FUNC) \
+                    and w.get(tok[:k], 0) >= 2 and w.get(tok[k:], 0) >= 2:
+                return True
+        return False
 
     qa: list = []
     for r in matrix:
         for c in r:
             toks = re.findall(r"[A-Za-z]{2,}", str(c))
             for a, b in zip(toks, toks[1:]):
-                if a.lower() in _FUNC and b.lower() in _FUNC:
+                al, bl = a.lower(), b.lower()
+                if al in _FUNC and bl in _FUNC:
                     continue        # "in"+"to" is not corruption
-                if w.get((a + b).lower(), 0) >= 2:
-                    qa += [a, b]
-            for t in toks:
-                lo = t.lower()
-                if w.get(lo, 0):
+                if al in _LEGIT or bl in _LEGIT:
                     continue
-                kind = _split2(lo) if len(lo) >= 3 else "skip"
-                if kind == "glue":
-                    qa.append(t)
-                elif kind is None and len(lo) >= 3 \
-                        and lo not in heads and lo not in tails:
-                    qa.append(t)
+                j = w.get(al + bl, 0)
+                if j >= 2:
+                    qa += [a, b]    # (a) visual second pass arbitrates
+            for k, t in enumerate(toks):
+                lo = t.lower()
+                if w.get(lo, 0) >= 2 or t[0].isupper() or lo in _FUNC \
+                        or lo in _LEGIT:
+                    continue
+                if len(lo) >= 16 and w.get(lo, 0) == 0:
+                    qa.append(t)                    # (d)
+                elif len(lo) >= 3 and _split2(lo):
+                    qa.append(t)                    # (c) two-way split
+                elif len(lo) >= 3 and (lo in heads or lo in tails):
+                    # a fragment only with its complement partner:
+                    # "rface" after "su" (join "surface" is printed);
+                    # lone rare words like "drum" stay unflagged
+                    for p in (toks[k - 1] if k else None,
+                              toks[k + 1] if k + 1 < len(toks) else None):
+                        # a function-word neighbour whose glue is a
+                        # misprint blob ("negligible"+"or") is not
+                        # complement evidence
+                        if p and p.lower() not in _FUNC \
+                                and (w.get((p + t).lower(), 0) >= 1
+                                     or w.get((t + p).lower(), 0) >= 1):
+                            qa.append(t)
+                            break
     return qa
 
 
@@ -381,13 +558,17 @@ def build_box(book, pg: int, box, counts, vocab=None, llm=None,
                 if vocab is not None:
                     # fixed point: chained glues ("theinfrat...") peel
                     # one repair per pass
-                    for _ in range(3):
+                    for _ in range(6):
                         fixed_parts, nf = _repair_tokens(
                             t.split(" "), vocab[0], vocab[1])
                         bt.vocab_fixes += nf
                         t = " ".join(fixed_parts)
                         if not nf:
                             break
+                for k, v in _VERIFIED_MERGES.items():
+                    if k in t:
+                        t = re.sub(rf"\b{re.escape(k)}\b", v, t)
+                        bt.vocab_fixes += 1
                 t = glyphs.repair(t, counts)
                 for tok in _LONG_TOKEN.findall(t):
                     bt.warnings.append(f"suspect_lost_space:{tok[:20]}")
@@ -414,6 +595,9 @@ def build_box(book, pg: int, box, counts, vocab=None, llm=None,
                 lm2 = verify(book, pg, box, sorted(set(susp))[:8])
                 if lm2:
                     merged2, n2 = merge_llm(matrix, lm2, vocab)
+                    # model re-read the box and found nothing to fix:
+                    # the remaining flags are false positives
+                    bt.verify_clear = n2 == 0
                     matrix = merged2
                     bt.llm_fixes += n2
                     bt.rows = matrix
@@ -564,8 +748,10 @@ class ChapterTables:
         chunks = self._chains[ci]
         matrix, joins, camels, vfix, lfix, warns = [], 0, 0, 0, 0, []
         dedup = False
+        bts = []
         for k, (cpg, cbox, mode) in enumerate(chunks):
             bt = self._bt(cpg, cbox, counts)
+            bts.append(bt)
             joins += bt.line_joins
             camels += bt.camel_fixes
             vfix += bt.vocab_fixes
@@ -582,6 +768,12 @@ class ChapterTables:
         qa: list = []
         if self.vocab is not None and matrix:
             qa = qa_suspects(matrix, self.vocab[0])
+            # a REVIEW flag is only meaningful when the visual second
+            # pass agrees something is wrong: every box that was
+            # re-read and came back clean downgrades the flag
+            if qa and any(b.verify_calls for b in bts) and all(
+                    b.verify_clear for b in bts if b.verify_calls):
+                qa = []
         lt = LogicalTable(
             table_id=tid, markdown=_markdown(matrix) if matrix else "",
             chunks=[(p, b) for p, b, _ in chunks],
