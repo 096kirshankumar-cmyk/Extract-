@@ -78,34 +78,26 @@ _LEGIT = frozenset({"antihelix"})
 _VERIFIED_MERGES = {
     "osteocal cin": "osteocalcin",
     "bonedestruct ion": "bone destruction",
-    "bonedestruction": "bone destruction",
     "fossaororbital": "fossa or orbital",
     "fossaor": "fossa or",
     "theinfrat emporal": "the infratemporal",
+    "oroptic": "or optic",
     "involvem ent": "involvement",
     "regionwithintracranialextradural":
         "region with intracranial extradural",
-    "andhas": "and has",
     "suprastruct ures": "suprastructures",
     "adja cent": "adjacent",
     "groo ve": "groove",
-    "co ncha": "concha",
-    "su pply": "supply",
-    "su rface": "surface",
     "do me": "dome",
     "destr oying": "destroying",
     "pterygo palatine": "pterygopalatine",
-    "extensi ve": "extensive",
-    "infrat emporal": "infratemporal",
-    "oroptic": "or optic",
-    "involvem ent": "involvement",
     "swi m": "swim",
     "im paired": "impaired",
     "be yond": "beyond",
 }
 
 _FUNC = frozenset({"the", "not", "of", "a", "an", "in", "on", "at", "is",
-                   "or", "and", "to", "for", "with", "per", "by"})
+                   "or", "and", "to", "for", "with", "per", "by", "has"})
 
 
 def _repair_token(tok: str, words: Counter, pairs: Counter) -> tuple:
@@ -122,6 +114,15 @@ def _repair_token(tok: str, words: Counter, pairs: Counter) -> tuple:
             and words.get(m.group(2).lower(), 0) >= 1
             and words.get((m.group(1) + m.group(2)).lower(), 0) == 0):
         return f"{m.group(1)}, {m.group(2)}", 1
+    # glued pair whose spaced form the book also prints ("andhas"):
+    # both parts must be common words and the pair must recur
+    if (tok.isalpha() and 6 <= len(tok) < 8
+            and words.get(tok.lower(), 0) == 0):
+        for i in range(3, len(tok) - 2):
+            h, t = tok[:i], tok[i:]
+            if (words.get(h.lower(), 0) >= 5 and words.get(t.lower(), 0) >= 5
+                    and pairs.get((h.lower(), t.lower()), 0) >= 2):
+                return f"{h} {t}", 1
     if tok.isalpha() and len(tok) >= 8 and words.get(tok.lower(), 0) == 0:
         for i in range(3, len(tok) - 2):
             h, t = tok[:i], tok[i:]
@@ -213,9 +214,10 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
                 h_blob = len(h) >= 8 and words.get(h.lower(), 0) == 0
                 h_ok = (words.get(h.lower(), 0) >= 2 or h.lower() in _FUNC
                         or h_blob)
-                if h_ok and ((len(t2) >= (6 if h_blob else 4)
-                              and t2[0].islower()
-                              and words.get(t2.lower(), 0) >= thr)
+                if h_ok and ((len(t2) >= 4 and t2[0].islower()
+                              and words.get(t2.lower(), 0) >= thr
+                              and (not h_blob or len(t2) >= 6
+                                   or words.get(t2.lower(), 0) >= 5))
                              or (t2.lower() in _FUNC and len(t2) >= 2
                                  and words.get(h.lower(), 0) >= 2)):
                     fixed, nf = f"{h} {t2}", 1
@@ -259,17 +261,17 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
             while nxt and nxt[-1] in ",.;:!?)]":
                 npunct = nxt[-1] + npunct
                 nxt = nxt[:-1]
-            if core.isalpha() and nxt.isalpha() and len(nxt) >= 2:
+            if core.isalpha() and nxt.isalpha() and len(nxt) >= 1:
                 jn = (core + nxt).lower()
                 wa, wb = words.get(core.lower(), 0), words.get(nxt.lower(), 0)
                 jj = words.get(jn, 0)
                 if (jj >= 2 and wa <= 2 and wb <= 2) or \
                    (jj >= 10 and wb <= 3 and wa <= 6 and nxt[0].islower()) or \
                    (core.lower() in _FUNC and jj >= 5 and wb <= 1) or \
-                   (jj >= 2 and jj > wa and jj > wb
+                   (jj >= (10 if len(nxt) == 1 else 2) and jj > wa and jj > wb
                     and jn.startswith(core.lower())
                     and jn.endswith(nxt.lower())
-                    and len(core) >= 3 and len(nxt) >= 2):
+                    and len(core) >= 3 and len(nxt) >= 1):
                     fixed, punct = fixed + nxt, npunct + punct
                     nfix += 1
                     i += 1
@@ -452,8 +454,12 @@ def qa_suspects(matrix: list, words) -> list:
                 if al in _LEGIT or bl in _LEGIT:
                     continue
                 j = w.get(al + bl, 0)
-                if j >= 2:
-                    qa += [a, b]    # (a) visual second pass arbitrates
+                wa, wb = w.get(al, 0), w.get(bl, 0)
+                # (a) only when the join outscores BOTH parts — the
+                # signature of a collision the book repeats; legitimate
+                # spaced terms ("brain stem") never satisfy this
+                if j >= 2 and j > wa and j > wb:
+                    qa += [a, b]
             for k, t in enumerate(toks):
                 lo = t.lower()
                 if w.get(lo, 0) >= 2 or t[0].isupper() or lo in _FUNC \
