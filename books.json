@@ -16,5 +16,11 @@
     "path": "Radiology_ed8_CLEAN_corrected.pdf",
     "page_offset": "auto",
     "note": "MARROW ED8 Radiology, 411 pages, no bookmarks (printed TOC)."
+  },
+  "ANA": {
+    "subject": "ANA",
+    "path": "/home/user/ana_book.pdf",
+    "page_offset": "auto",
+    "note": "MARROW ED8 Anatomy, 1217 pages \u2014 BLIND validation book, not used in any test."
   }
 }

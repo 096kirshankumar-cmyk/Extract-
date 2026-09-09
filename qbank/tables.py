@@ -94,6 +94,12 @@ _VERIFIED_MERGES = {
     "swi m": "swim",
     "im paired": "impaired",
     "be yond": "beyond",
+    # ENT 017-T01: wrap splits of words the book prints joined
+    # ("restless" p282/463, "throughout" p280/445; split spacing
+    # printed nowhere) — both parts are common words, so the
+    # evidence rules must stay silent to protect "brain stem"
+    "rest less": "restless",
+    "through out": "throughout",
 }
 
 _FUNC = frozenset({"the", "not", "of", "a", "an", "in", "on", "at", "is",
@@ -189,6 +195,43 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
             punct = core[-1] + punct
             core = core[:-1]
         fixed, nf = _repair_token(core, words, pairs)
+        # function word glued onto a common word, printed <=2x
+        # ("oftouch" -> "of touch", "tomotor" -> "to motor",
+        # "ofinternal" -> "of internal"): both survivors are strongly
+        # evidenced in the book, the glued form is not. 2-letter
+        # function prefixes ("of", "to") are below the generic peel's
+        # 3-letter cut, hence this dedicated rule.
+        _SUFFIX = ("able", "ible", "ance", "ence", "tion", "ment",
+                   "ness", "ous", "ive", "ful", "less", "ity", "ies")
+        # two function words glued ("tothe" -> "to the"): neither
+        # survives the >=3-letter cuts of the generic peels
+        if (nf == 0 and core.isalpha() and len(core) >= 4
+                and words.get(core.lower(), 0) <= 2):
+            for f in _FUNC:
+                t2 = core[len(f):]
+                if (core[:len(f)].lower() == f and len(f) >= 2
+                        and len(t2) >= 2 and t2.lower() in _FUNC):
+                    fixed, nf = f"{core[:len(f)]} {t2}", 1
+                    break
+        if (nf == 0 and core.isalpha() and len(core) >= 6
+                and words.get(core.lower(), 0) <= 2):
+            for f in _FUNC:
+                t2 = core[len(f):]
+                # t2 must not be a productive suffix word ("notable"
+                # = not+able is a real word; "tomotor" is not)
+                if (core[:len(f)].lower() == f and len(t2) >= 4
+                        and t2[0].islower() and t2.lower() not in _SUFFIX
+                        and words.get(t2.lower(), 0) >= 5):
+                    fixed, nf = f"{core[:len(f)]} {t2}", 1
+                    break
+            if nf == 0:
+                for f in _FUNC:
+                    h = core[:-len(f)]
+                    if (core[-len(f):].lower() == f and len(h) >= 5
+                            and words.get(h.lower(), 0) >= 5):
+                        fixed, nf = f"{h} {core[-len(f):]}", 1
+                        break
+
         # prefix + unknown remainder ("intosuprastructures"): the
         # prefix is a common book word, the remainder is printed
         # nowhere on its own (so not a real short word being glued).
@@ -208,6 +251,14 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
                 and words.get(core.lower(), 0) <= 1):
             for j in range(3, len(core) - 1):
                 h, t2 = core[:j], core[j:]
+                # a lowercase token the book actually prints, splittable
+                # into two common lowercase words, is a rare real word
+                # ("everywhere"), not a glued artifact — never peel it
+                if (core[0].islower() and words.get(core.lower(), 0) >= 1
+                        and h[0].islower() and t2[0].islower()
+                        and words.get(h.lower(), 0) >= 2
+                        and words.get(t2.lower(), 0) >= 2):
+                    continue
                 thr = 1 if h.lower() in _FUNC else 2
                 # recursive peel: the head may itself be a glued blob
                 # (w==0) that later passes split further
@@ -271,7 +322,11 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
                    (jj >= (10 if len(nxt) == 1 else 2) and jj > wa and jj > wb
                     and jn.startswith(core.lower())
                     and jn.endswith(nxt.lower())
-                    and len(core) >= 3 and len(nxt) >= 1):
+                    and len(core) >= 3 and len(nxt) >= 1) or \
+                   (len(core) == 1 and core.lower() not in "ai"
+                    and nxt[0].islower() and jj >= 50
+                    and jj > 10 * wa and jj > 10 * wb
+                    and pairs.get((core.lower(), nxt.lower()), 0) == 0):
                     fixed, punct = fixed + nxt, npunct + punct
                     nfix += 1
                     i += 1
@@ -665,6 +720,11 @@ def _markdown(matrix) -> str:
     return "\n".join(md)
 
 
+def _rowkey(row) -> str:
+    """Whitespace/punct-insensitive fingerprint of one table row."""
+    return re.sub(r"[^a-z0-9]", "", "".join(row).lower())
+
+
 class ChapterTables:
     """Logical-table registry for one chapter.
 
@@ -710,6 +770,12 @@ class ChapterTables:
         if any(abs(a - b) > 6 for a, b in zip(bt.cols, nbt.cols)):
             return None
         if bt.header and bt.header == nbt.header:
+            # repeated header AND repeated first data row: the next
+            # page prints a variant COPY of the same table (the book
+            # does this for adjacent solutions), not a continuation
+            if (len(bt.rows) > 1 and len(nbt.rows) > 1
+                    and _rowkey(bt.rows[1]) == _rowkey(nbt.rows[1])):
+                return None
             return "dedup"                       # repeated header
         # no repeated header: document-flow continuation — previous box
         # is the page's last, next box the next page's first, starting

@@ -49,11 +49,20 @@ Transcribe every cell EXACTLY as printed:
 - reconstruct words the typesetter broke across lines inside a cell
   ("fl" + "ow" = "flow", "Atri" + "al" = "Atrial",
    "abn" + "ormalities" = "abnormalities");
-- insert the missing space where two separate words are glued
-  ("Increasedpulmonary" = "Increased pulmonary",
-   "notdepend" = "not depend", "damage,fetal" = "damage, fetal");
-- DO NOT correct spellings, DO NOT normalise terminology, DO NOT
-  translate, DO NOT add, remove or reorder any content.
+- this book's layout constantly prints missing or wrong spaces inside
+  cells: glued words ("oftouch" = "of touch", "tomotor" = "to motor",
+   "ofinternal" = "of internal", "Increasedpulmonary" =
+   "Increased pulmonary", "notdepend" = "not depend",
+   "damage,fetal" = "damage, fetal") and words broken mid-word
+  ("oblongatatill t he 2nd" = "oblongata till the 2nd",
+   "theacro miothoracicand" = "the acromiothoracic and");
+  read each cell the way a human reader would and output it with
+  natural, corrected spacing — never carry a layout artifact into
+  your output;
+- NEVER delete or add a word: every printed letter, digit and
+  punctuation mark must appear exactly once in your output. Only
+  spaces may change. DO NOT correct spellings, DO NOT normalise
+  terminology, DO NOT translate, DO NOT reorder content.
 A multi-line cell is ONE string with single spaces between its lines
 (after the word reconstruction above)."""
 
@@ -366,8 +375,9 @@ def _post(url: str, payload: dict, key: str) -> dict:
 
 
 def _cache_path(cache_dir: Path, book, pg: int, box) -> Path:
+    # T2: prompt now mandates layout-spacing repair + no-deletion
     sig = hashlib.sha1(
-        f"{getattr(book.doc, 'name', '')}|{pg}|{tuple(round(v,1) for v in box)}"
+        f"T2|{getattr(book.doc, 'name', '')}|{pg}|{tuple(round(v,1) for v in box)}"
         .encode()).hexdigest()
     return cache_dir / f"{sig}.json"
 

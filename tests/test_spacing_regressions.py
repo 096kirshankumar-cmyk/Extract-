@@ -230,3 +230,59 @@ def test_unrelated_tables_not_merged(book, vocab):
     ct = T.ChapterTables(book, 14, 231, 231, vocab, None, None)
     lt = ct.lookup(231, book.page(231).table_boxes[0])
     assert lt is not None and not lt.cross_page
+
+
+# ---------------- blind-book (ANA) evidence ---------------------------
+# Real failures observed on a book that played NO part in designing or
+# testing the rules (MARROW ED8 Anatomy, raw text layer).
+
+ANA_PDF = "/home/user/ana_book.pdf"
+needs_ana = pytest.mark.skipif(not Path(ANA_PDF).exists(),
+                               reason="ANA blind book absent")
+
+
+@pytest.fixture(scope="module")
+def ana():
+    if not Path(ANA_PDF).exists():
+        pytest.skip("ANA blind book absent")
+    from qbank.textlayer import Book
+    b = Book(ANA_PDF)
+    return b, T.build_vocab(b)
+
+
+@needs_ana
+def test_ana_func_prefix_unglue(ana):
+    # glued function prefixes printed <=2x, survivor strongly evidenced
+    w, p = ana[1]
+    assert T._repair_tokens(["oftouch"], w, p)[0] == ["of touch"]
+    assert T._repair_tokens(["tomotor"], w, p)[0] == ["to motor"]
+    assert T._repair_tokens(["ofinternal"], w, p)[0] == ["of internal"]
+    assert T._repair_tokens(["ofpain"], w, p)[0] == ["of pain"]
+
+
+@needs_ana
+def test_ana_printed_word_never_peeled(ana):
+    # "everywhere" is printed once as one word: not a glued artifact
+    w, p = ana[1]
+    assert T._repair_tokens(["everywhere"], w, p)[0] == ["everywhere"]
+
+
+@needs_ana
+def test_ana_variant_copies_not_merged(ana):
+    # p322/323 print two variant COPIES of the same table (repeated
+    # header AND repeated first row): two logical tables, not one
+    b, v = ana
+    ct = T.ChapterTables(b, 17, 322, 323, v, None, None)
+    lt1 = ct.lookup(322, b.page(322).table_boxes[0])
+    lt2 = ct.lookup(323, b.page(323).table_boxes[0])
+    assert lt1 is not None and lt2 is not None
+    assert lt1 is not lt2 and not lt1.cross_page
+
+
+@needs_ana
+def test_ana_single_letter_fragment_merge(ana):
+    # "t he" printed by the book's corruption; join overwhelmingly
+    # common, split spacing printed nowhere
+    w, p = ana[1]
+    assert T._repair_tokens(["t", "he"], w, p)[0] == ["the"]
+    assert T._repair_tokens(["a", "he"], w, p)[0] == ["a", "he"]
