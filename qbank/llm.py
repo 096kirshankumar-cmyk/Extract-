@@ -187,11 +187,16 @@ def _block_ok(cdt: list, cmt: list, words, pairs=None) -> bool:
             # a fragment-split of an established det word is a
             # regression ("surface" -> "su rface"): reject unless every
             # model piece covering that det word is itself common
-            # ("retractionnot" -> "retraction not" stays allowed)
+            # ("retractionnot" -> "retraction not" stays allowed).
+            # A det token printed <=2x is a glued artifact, not a real
+            # word — the model un-glueing it ("oblongatatill" ->
+            # "oblongata till") is a repair and must win.
             for ds, de, dm, _o, _f in D:
                 if ds <= ms and de >= me and len(dm) > len(m) \
                         and words.get(dm, 0) >= 2 \
                         and (dm.startswith(m) or dm.endswith(m)):
+                    if words.get(dm, 0) <= 2:
+                        continue        # artifact: model repair wins
                     # splitting an established det word is accepted
                     # only when the book itself prints the split
                     # spacing somewhere ("retraction not"); a model
@@ -323,15 +328,13 @@ def merge_llm(det_rows: list, llm_rows: list, vocab=None) -> tuple:
     det_shape = [len(r) for r in det_rows]
     llm_shape = [len(r) if isinstance(r, list) else -1 for r in llm_rows]
     if det_shape != llm_shape:
-        # structure suggestion: content must be character-identical and
-        # every alphabetic token must be an established book word
+        # structure suggestion: Gemini owns spacing and cell flow as
+        # long as not one character is deleted or added — the whole
+        # table's content must be character-identical (whitespace
+        # removed).  Otherwise the deterministic table is kept.
         if words is not None and _content(llm_rows) == _content(det_rows):
-            toks = [x.lower() for x in re.findall(
-                r"[A-Za-z]{3,}", " ".join(
-                    str(c) for r in llm_rows for c in r))]
-            if all(words.get(t, 0) >= 1 for t in toks):
-                return [[" ".join(str(c).split()) for c in r]
-                        for r in llm_rows], 1
+            return [[" ".join(str(c).split()) for c in r]
+                    for r in llm_rows], 1
         return det_rows, 0
     out, nfix = [], 0
     for drow, lrow in zip(det_rows, llm_rows):
@@ -341,6 +344,12 @@ def merge_llm(det_rows: list, llm_rows: list, vocab=None) -> tuple:
         for d, l in zip(drow, lrow):
             l = str(l)
             lj = " ".join(l.split())
+            # Gemini owns table spacing: the model cell may replace
+            # the deterministic one whenever it carries exactly the
+            # same characters (no word deleted or added) and its
+            # spacing wins the evidence arbitration in _respaced —
+            # which accepts the model un-glueing rare glued artifacts
+            # and rejects the model breaking established book words.
             take = False
             if lj != d and _norm(l) == _norm(d):
                 if words is None:
@@ -370,6 +379,12 @@ def _post(url: str, payload: dict, key: str) -> dict:
         except urllib.error.HTTPError as e:   # retry throttling/server errs
             if e.code in (429, 500, 503) and attempt < 3:
                 _time.sleep(1.5 * attempt)
+                continue
+            raise
+        except (urllib.error.URLError, OSError) as e:
+            # transient network failure: retry like a 5xx
+            if attempt < 3:
+                _time.sleep(2.0 * attempt)
                 continue
             raise
 

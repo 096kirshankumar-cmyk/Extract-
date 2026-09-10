@@ -167,6 +167,9 @@ def test_envelope_rejects_model_glue_of_spaced_words(vocab):
     assert out == det and n == 0
 
 
+
+
+
 def test_envelope_accepts_model_join_when_glued_form_is_book_word(vocab):
     out, n = merge_llm([["the do me of the jugular bulb"]],
                        [["the dome of the jugular bulb"]], vocab)
@@ -286,3 +289,13 @@ def test_ana_single_letter_fragment_merge(ana):
     w, p = ana[1]
     assert T._repair_tokens(["t", "he"], w, p)[0] == ["the"]
     assert T._repair_tokens(["a", "he"], w, p)[0] == ["a", "he"]
+
+
+@needs_ana
+def test_envelope_accepts_model_unglue_of_rare_artifact(ana):
+    # det token printed <=2x is a glued artifact: the model's un-glue
+    # wins even without pair evidence (Gemini owns table spacing)
+    det = [["extends the whole of the medulla oblongatatill the 2nd"]]
+    model = [["extends the whole of the medulla oblongata till the 2nd"]]
+    out, n = merge_llm(det, model, ana[1])
+    assert n == 1 and out[0][0] == model[0][0]
