@@ -74,7 +74,7 @@
   <a href="/">← pipeline</a>
   <span id="zips"></span>
   <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
-    <input id="qid" placeholder="q_id e.g. ENT-021-008"
+    <input id="qid" placeholder="q_id / number: ENT-021-008, 021-8, 8"
       style="background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:4px 8px;font-size:12px;width:170px">
     <button class="btn" style="margin:0" onclick="openQ()">Open</button>
   </span>
@@ -152,37 +152,96 @@ function showAudit(i){
   renderList(); document.getElementById("detail").scrollTop = 0;
 }
 async function openQ(id){
-  const qid = (id || document.getElementById("qid").value).trim();
-  if (!qid) return;
-  const r = await fetch("/api/question/"+encodeURIComponent(qid));
-  if (!r.ok){ alert(((await r.json()).error) || "not found"); return; }
-  showQuestion(await r.json());
+  const term = (id || document.getElementById("qid").value).trim();
+  if (!term) return;
+  const list = await (await fetch("/api/lookup?term=" +
+    encodeURIComponent(term))).json();
+  if (!list.length){ alert("koi question match nahi: " + term); return; }
+  if (list.length === 1) return showQuestion(list[0]);
+  sel = null;
+  document.getElementById("detail").innerHTML = `
+    <h2>${list.length} matches for "${esc(term)}"</h2>
+    ${list.map((d,i)=>`<div class="item" style="border:1px solid var(--line);
+      border-radius:8px;margin:8px 0;cursor:pointer"
+      onclick='showQuestion(window._LOOKUP[${i}])'>
+      <div class="t">${esc(d.q.q_id)} <span style="color:var(--mut)">
+        (${esc(d.q.chapter_id)})</span>
+        <span class="st ${d.q.qa_status==="READY"?"decided":"pending"}">
+        ${esc(d.q.qa_status||"")}</span></div>
+      <div class="s">${esc((d.q.question_text||"").slice(0,110))}</div>
+    </div>`).join("")}`;
+  window._LOOKUP = list;
+  renderList();
+}
+const imgTag = f => `<img loading="lazy" src="/assets/${esc(f)}"
+  style="max-width:280px;border:1px solid var(--line);border-radius:6px;
+  margin:4px 6px 4px 0;vertical-align:top">`;
+function tableEditor(d, t, holder){
+  const id = "tb_" + holder + "_" + String(t.table_id).replace(/[^A-Za-z0-9]/g,"");
+  return `<div style="margin:10px 0">
+    <div style="color:var(--mut);font-size:12px">table ${esc(t.table_id)}
+      (${holder}) · pages ${(t.source_pages||[]).join(", ")}</div>
+    ${md2html(t.markdown||"", [])}
+    <details><summary style="color:var(--mut);cursor:pointer;font-size:12px">
+      markdown edit</summary>
+      <textarea id="${id}">${esc(t.markdown||"")}</textarea>
+      <button class="btn" onclick="saveTable('${esc(d.q.q_id)}',
+        '${esc(d.book)}','${esc(t.table_id)}','${id}')">Save table</button>
+      <span class="msg" id="${id}_m"></span>
+    </details></div>`;
 }
 function showQuestion(d){
   sel = null;
-  const q = d.q||{}, a = d.answer||{}, s = d.solution||{};
+  const q = d.q || {}, a = d.answer || {}, s = d.solution || {};
+  const qimg = (q.question_images||[]).map(i=>i.file);
+  const simg = (s.solution_images||[]).map(i=>i.file);
+  const qtabs = q.tables||[], stabs = (s.tables||[])
+    .filter(t=>!qtabs.some(x=>x.table_id===t.table_id));
   document.getElementById("detail").innerHTML = `
-   <h2>${esc(q.q_id||"")}
-     <span style="color:var(--mut)">(${esc(q.chapter_id||"")})</span></h2>
-   <div class="meta">question-level editor — verified, all copies;
-     table markdown edit ke liye queue item kholo</div>
-   <div style="color:var(--mut);font-size:12px">question_text</div>
-   <textarea id="qt" style="min-height:110px">${esc(q.question_text||"")}</textarea>
-   ${(q.options||[]).map(o=>`<div style="margin:6px 0">
-     <span style="color:var(--warn);font-weight:600">${esc(o.id)}</span>
-     <input data-opt="${esc(o.id)}" value="${esc(o.text||"")}"
-      style="width:calc(100% - 30px);background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font-size:12.5px"></div>`).join("")}
-   <div style="margin:8px 0"><span style="color:var(--mut)">correct_option:</span>
-     <select id="co" style="background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px">
-       ${"ABCD".split("").map(l=>`<option ${l===(a.correct_option||"")?"selected":""}>${l}</option>`).join("")}
-     </select></div>
-   <div style="color:var(--mut);font-size:12px">solution_text</div>
-   <textarea id="st" style="min-height:90px">${esc(s.solution_text||"")}</textarea>
-   <div style="margin-top:8px">
-     <button class="btn ok" onclick="saveQ('${esc(q.q_id||"")}','${esc(d.book)}')">Save edit</button>
-     <span class="msg" id="qmsg"></span></div>
-   ${(q.tables||[]).length?`<div class="note" style="margin-top:12px">${(q.tables||[]).length} table(s) attached — markdown edit queue view me hota hai.</div>`:""}`;
+    <h2>${esc(q.q_id||"")}
+      <span style="color:var(--mut)">(${esc(q.chapter_id||"")})</span>
+      <span class="st ${q.qa_status==="READY"?"decided":"pending"}">
+        ${esc(q.qa_status||"?")}</span></h2>
+    <div class="meta">pages ${(q.source_pages||[]).join(", ")} ·
+      grade ${esc(q.q_id_grade||"")} ·
+      ${esc(q.extraction_status||"")}${(q.qa_reasons||[]).length?
+      " · reasons: "+q.qa_reasons.map(esc).join(", "):""}${
+      (q.missing_fields||[]).length?
+      " · missing: "+q.missing_fields.map(esc).join(", "):""}</div>
+    <div style="color:var(--mut);font-size:12px;margin-bottom:4px">question_text</div>
+    <textarea id="qt" style="min-height:110px">${esc(q.question_text||"")}</textarea>
+    ${qimg.length?`<div>${qimg.map(imgTag).join("")}</div>`:""}
+    ${(q.options||[]).map(o=>`
+      <div style="margin:6px 0">
+      <span style="color:var(--warn);font-weight:600">${esc(o.id)}</span>
+      <input data-opt="${esc(o.id)}" value="${esc(o.text||"")}"
+       style="width:calc(100% - 30px);background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font-size:12.5px">
+      ${(o.images||[]).length?`<div>${o.images.map(i=>imgTag(i.file)).join("")}</div>`:""}
+      </div>`).join("")}
+    <div style="margin:8px 0"><span style="color:var(--mut)">correct_option:</span>
+      <select id="co" style="background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px">
+        ${"ABCD".split("").map(l=>`<option ${l===(a.correct_option||"")?"selected":""}>${l}</option>`).join("")}
+      </select></div>
+    <div style="color:var(--mut);font-size:12px;margin-bottom:4px">solution_text</div>
+    <textarea id="st" style="min-height:90px">${esc(s.solution_text||"")}</textarea>
+    ${simg.length?`<div>${simg.map(imgTag).join("")}</div>`:""}
+    ${qtabs.map(t=>tableEditor(d,t,"question")).join("")}
+    ${stabs.map(t=>tableEditor(d,t,"solution")).join("")}
+    <div style="margin-top:8px">
+      <button class="btn ok" onclick="saveQ('${esc(q.q_id||"")}','${esc(d.book)}')">Save question edit</button>
+      <span class="msg" id="qmsg"></span></div>`;
   renderList(); document.getElementById("detail").scrollTop = 0;
+}
+async function saveTable(qid, book, tid, elemId){
+  const r = await fetch("/api/edit", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({book, q_id:qid, table_id:tid,
+      markdown: document.getElementById(elemId).value})});
+  const j = await r.json();
+  const m = document.getElementById(elemId+"_m");
+  if (j.ok){ m.className="msg";
+    m.textContent = `saved to ${j.copies} copie(s), verified ✔`; }
+  else { m.className="msg err"; m.textContent = "refused: "+j.why; }
 }
 async function saveQ(qid, book){
   const patch = {

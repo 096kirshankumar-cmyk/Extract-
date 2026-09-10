@@ -369,6 +369,21 @@ def api_question(q_id: str):
     return jsonify(got)
 
 
+@app.get("/api/lookup")
+def api_lookup():
+    term = (request.args.get("term") or "").strip()
+    return jsonify(review_mod.lookup_questions(config.OUTPUT_ROOT, term))
+
+
+@app.get("/assets/<path:rel>")
+def assets(rel: str):
+    base = config.ASSETS_DIR.resolve()
+    f = (base / rel).resolve()
+    if not f.is_relative_to(base) or not f.is_file():
+        return jsonify(ok=False, error="no such asset"), 404
+    return send_file(f, mimetype="image/webp")
+
+
 @app.post("/api/question/<q_id>/edit")
 def api_question_edit(q_id: str):
     b = request.json or {}

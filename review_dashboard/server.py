@@ -87,6 +87,25 @@ class Handler(SimpleHTTPRequestHandler):
                                    "error": f"no question {qid} on disk"},
                                   404)
             return self._json(got)
+        if self.path.startswith("/api/lookup"):
+            import urllib.parse as _up
+            term = _up.parse_qs(_up.urlparse(self.path).query
+                                ).get("term", [""])[0]
+            return self._json(review.lookup_questions(
+                config.OUTPUT_ROOT, term))
+        if self.path.startswith("/assets/"):
+            import urllib.parse as _up
+            rel = _up.unquote(self.path[len("/assets/"):])
+            base = config.ASSETS_DIR.resolve()
+            f = (base / rel).resolve()
+            if f.is_relative_to(base) and f.is_file():
+                body = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/webp")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            return self._json({"error": "no such asset"}, 404)
         if self.path.startswith("/crops/"):
             name = self.path[len("/crops/"):].strip("/")
             if "/" not in name and name.endswith(".png"):

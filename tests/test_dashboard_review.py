@@ -236,3 +236,27 @@ def test_question_edit_partial_patch_leaves_options(client):
     assert q["question_text"] == "Only stem changed"
     assert q["options"][0]["text"] == "RCA"          # untouched
     assert q["options"][0]["images"] == [{"file": "f1"}]
+
+def test_lookup_flexible_forms(client):
+    # exact id, case-insensitive, chapter-number form, bare number
+    for term in ("TST-001-001", "tst-001-001", "001-001", "1"):
+        r = client.get(f"/api/lookup?term={term}")
+        ids = [x["q"]["q_id"] for x in r.get_json()]
+        assert ids == ["TST-001-001"], (term, ids)
+    # other subject's id / absent number match nothing
+    for term in ("ENT-021-008", "2"):
+        r = client.get(f"/api/lookup?term={term}")
+        assert [x["q"]["q_id"] for x in r.get_json()] == []
+    r = client.get("/api/lookup?term=TST")
+    assert len(r.get_json()) == 1
+
+
+def test_assets_route(client, tmp_path, monkeypatch):
+    base = tmp_path / "assets" / "questions"
+    (base / "TST").mkdir(parents=True)
+    (base / "TST" / "x.webp").write_bytes(b"WEBPFAKE")
+    monkeypatch.setattr(config, "ASSETS_DIR", base)
+    r = client.get("/assets/TST/x.webp")
+    assert r.status_code == 200 and r.data == b"WEBPFAKE"
+    assert client.get("/assets/../secrets.txt").status_code == 404
+    assert client.get("/assets/TST/nope.webp").status_code == 404

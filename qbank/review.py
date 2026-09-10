@@ -176,24 +176,56 @@ def find_question(out_root: Path, q_id: str) -> dict | None:
     {book, q, answer, solution} — the shape the dashboard editor
     renders. None when the id is not on disk."""
     want = (q_id or "").strip().upper()
+    for got in _iter_questions(out_root):
+        if (got["q"].get("q_id") or "").upper() == want:
+            return got
+    return None
+
+
+def _iter_questions(out_root: Path):
     split = Path(out_root) / "split"
     if not split.is_dir():
-        return None
+        return
     for sub in sorted(split.iterdir()):
         if not sub.is_dir():
             continue
         for qf in sorted(sub.glob("*/questions.jsonl")):
+            ch = qf.parent
+            answers = {(x.get("q_id") or "").upper(): x
+                       for x in _read_jsonl(ch / "answers.jsonl")}
+            solutions = {(x.get("q_id") or "").upper(): x
+                         for x in _read_jsonl(ch / "solutions.jsonl")}
             for r in _read_jsonl(qf):
-                if (r.get("q_id") or "").upper() != want:
-                    continue
-                ch = qf.parent
-                ans = next((x for x in _read_jsonl(ch / "answers.jsonl")
-                            if (x.get("q_id") or "").upper() == want), None)
-                sol = next((x for x in _read_jsonl(ch / "solutions.jsonl")
-                            if (x.get("q_id") or "").upper() == want), None)
-                return {"book": sub.name, "q": r, "answer": ans,
-                        "solution": sol}
-    return None
+                wid = (r.get("q_id") or "").upper()
+                yield {"book": sub.name, "q": r,
+                       "answer": answers.get(wid),
+                       "solution": solutions.get(wid)}
+
+
+def lookup_questions(out_root: Path, term: str, limit: int = 20) -> list:
+    """Flexible search, same semantics as the old /review/lookup:
+    full or partial q_id ('ent-021', 'ENT-021-008'), chapter-number
+    forms ('021-018', '21-18'), or a bare question number ('18')
+    matched across every chapter/subject. Case-insensitive."""
+    t = (term or "").strip().upper()
+    if not t:
+        return []
+    num = re.fullmatch(r"(\d{1,3})-(\d{1,3})", t)
+    bare = t.isdigit()
+    out = []
+    for got in _iter_questions(out_root):
+        qid = (got["q"].get("q_id") or "").upper()
+        hit = t in qid
+        if not hit and num:
+            hit = qid.endswith(
+                f"-{int(num.group(1)):03d}-{int(num.group(2)):03d}")
+        if not hit and bare:
+            hit = qid.endswith(f"-{int(t):03d}")
+        if hit:
+            out.append(got)
+            if len(out) >= limit:
+                break
+    return out
 
 
 def apply_question_edit(out_root: Path, book: str, q_id: str,
