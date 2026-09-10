@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY qbank/ qbank/
 COPY scripts/ scripts/
 COPY tests/ tests/
+COPY review_dashboard/ review_dashboard/
 COPY books.json FORMAT.md dashboard.py ./
 
 # book PDFs: attach a Railway Volume mounted at /pdfs (or bake into

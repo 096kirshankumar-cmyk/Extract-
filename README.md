@@ -273,3 +273,19 @@ python -m pytest tests/ -q        # 21 tests, no fixtures needed
 `OUTPUT_DIR` overrides the output root (default `qbank_output/`);
 `QBANK_PDFS_DIR` adds a PDF search directory; `QBANK_BOOKS` overrides
 `books.json`.
+
+## Web dashboard (Railway)
+
+`dashboard.py` is the production web shell (Flask): upload/fetch a book
+PDF, run extraction, watch the log, download the review-gated
+`final_export.zip`. Two more surfaces hang off it:
+
+- `/review` — the human review dashboard: every REVIEW-flagged table,
+  printed-page crop beside the extracted JSON, in-place edit + approve.
+  Decisions persist in append-only ledgers and hold the export gate
+  until the queue is resolved.
+- `/api/audit` — the post-run content audit report (numeric drift,
+  duplicates, thin options, bad answer key); advisory flags only.
+
+Both also run standalone for local work via
+`review_dashboard/server.py`.

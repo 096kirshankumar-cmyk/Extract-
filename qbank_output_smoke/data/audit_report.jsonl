@@ -1,4 +1,0 @@
-{"kind": "numeric_drift", "severity": "REVIEW", "subject": "TST", "chapter_id": null, "q_id": "TST-001-001", "where": "table_T1", "value": "90", "pages": []}
-{"kind": "numeric_drift", "severity": "REVIEW", "subject": "TST", "chapter_id": null, "q_id": "TST-001-001", "where": "solution_text", "value": "77", "pages": [49, 50, 51]}
-{"kind": "thin_options", "severity": "HIGH", "subject": "TST", "chapter_id": null, "q_id": "TST-001-001", "detail": "0 non-empty options"}
-{"kind": "bad_answer", "severity": "HIGH", "subject": "TST", "chapter_id": null, "q_id": "TST-001-001", "detail": "correct_option='Z'"}

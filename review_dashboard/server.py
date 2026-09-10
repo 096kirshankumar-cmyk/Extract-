@@ -16,13 +16,30 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO))
 
-from qbank import review  # noqa: E402
+from qbank import config, review  # noqa: E402
+
+
+def _crop_file(name: str):
+    for _book, root in books():
+        cand = root / "crops" / name
+        if cand.is_file():
+            return cand
+    legacy = HERE / "crops" / name
+    return legacy if legacy.is_file() else None
 
 
 def books():
-    for d in sorted(REPO.glob("qbank_output_*")):
-        if (d / "split").is_dir():
-            yield d.name.replace("qbank_output_", "").upper(), d
+    roots = [d for d in sorted(REPO.glob("qbank_output_*"))
+             if (d / "split").is_dir()]
+    single = config.OUTPUT_ROOT
+    if (single / "split").is_dir() and single not in roots:
+        roots.append(single)
+    seen = set()
+    for root in roots:
+        for sub in sorted((root / "split").iterdir()):
+            if sub.is_dir() and sub.name not in seen:
+                seen.add(sub.name)
+                yield sub.name, root
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -62,6 +79,18 @@ class Handler(SimpleHTTPRequestHandler):
                         self.end_headers()
                         return self.wfile.write(body)
             return self._json({"error": "no zip for book"}, 404)
+        if self.path.startswith("/crops/"):
+            name = self.path[len("/crops/"):].strip("/")
+            if "/" not in name and name.endswith(".png"):
+                f = _crop_file(name)
+                if f:
+                    body = f.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    return self.wfile.write(body)
+            return self._json({"error": "no such crop"}, 404)
         return super().do_GET()
 
     def do_POST(self):

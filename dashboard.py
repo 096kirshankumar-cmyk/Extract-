@@ -29,8 +29,13 @@ from werkzeug.utils import secure_filename
 
 from qbank import config
 from qbank import state as state_mod
+from qbank import audit as audit_mod
+from qbank import review as review_mod
 from qbank.export import build_final_zip, gate_final_zip
 from qbank.run import run_book
+from review_dashboard.gen import gen_crops
+
+HERE = Path(__file__).resolve().parent
 
 PDF_DIR = Path(os.environ.get("QBANK_PDFS_DIR",
                               str(config.REPO_ROOT / "pdfs")))
@@ -113,6 +118,26 @@ def _job_runner(subject: str, force: bool):
                 job["log"].append("")
                 job["log"].append("=== export ===")
                 out = build_final_zip(config.OUTPUT_ROOT)
+            job["log"].append("")
+            job["log"].append("=== review assets ===")
+            try:
+                cr = gen_crops(subject, pdf, config.OUTPUT_ROOT)
+                job["log"].append(
+                    f"review crops: {cr['items']} REVIEW table(s), "
+                    f"{cr['pages_rendered']} page(s) rendered")
+            except Exception as exc:                 # noqa: BLE001
+                job["log"].append(f"crops skipped: {exc}")
+            try:
+                au = audit_mod.audit_book(config.OUTPUT_ROOT,
+                                          subject=subject)
+                audit_mod.write_report(config.OUTPUT_ROOT, au)
+                kinds = ", ".join(f"{k}={v}"
+                                  for k, v in sorted(au["by_kind"].items()))
+                job["log"].append(
+                    f"audit: {au['rows_scanned']} rows scanned, "
+                    f"flags: {kinds or 'none'}")
+            except Exception as exc:                 # noqa: BLE001
+                job["log"].append(f"audit skipped: {exc}")
             if not out["ok"]:
                 job["status"] = "error"
                 job["error"] = f"export REFUSED: {out['why']}"
@@ -219,6 +244,77 @@ def healthz():
     return jsonify(ok=True)
 
 
+# ------------------------------------------------------- review layer
+
+@app.get("/review")
+def review_page():
+    """The human review dashboard (edit + approve REVIEW tables)."""
+    return Response((HERE / "review_dashboard" / "index.html").read_text(),
+                    mimetype="text/html")
+
+
+@app.get("/api/queue")
+def api_queue():
+    return jsonify(review_mod.review_tables(config.OUTPUT_ROOT))
+
+
+@app.get("/api/audit")
+def api_audit():
+    rep = config.OUTPUT_ROOT / "data" / "audit_report.jsonl"
+    rows = []
+    if rep.exists():
+        for line in rep.read_text().splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    return jsonify(rows)
+
+
+@app.post("/api/decision")
+def api_decision():
+    b = request.json or {}
+    try:
+        row = review_mod.record_decision(
+            config.OUTPUT_ROOT, b["book"], b["q_id"], b["table_id"],
+            b.get("action", "approve"), b.get("note", ""))
+    except KeyError as exc:
+        return jsonify(ok=False, error=f"missing field {exc}"), 400
+    return jsonify(row)
+
+
+@app.post("/api/edit")
+def api_edit():
+    b = request.json or {}
+    try:
+        res = review_mod.apply_table_edit(
+            config.OUTPUT_ROOT, b["book"], b["q_id"], b["table_id"],
+            b.get("markdown", ""))
+    except KeyError as exc:
+        return jsonify(ok=False, error=f"missing field {exc}"), 400
+    if res.get("ok") and b.get("action"):
+        review_mod.record_decision(config.OUTPUT_ROOT, b["book"],
+                                   b["q_id"], b["table_id"], b["action"],
+                                   "saved via edit")
+    return jsonify(res)
+
+
+@app.get("/zip/<book>")
+def zip_for_book(book: str):
+    """Review-dashboard zip link: the (review-gated) final export."""
+    return download()
+
+
+@app.get("/crops/<name>")
+def crops(name: str):
+    if ".." in name:
+        return jsonify(ok=False, error="bad name"), 400
+    f = config.OUTPUT_ROOT / "crops" / name
+    if not f.is_file():
+        f = HERE / "review_dashboard" / "crops" / name
+    if not f.is_file():
+        return jsonify(ok=False, error="no such crop"), 404
+    return send_file(f, mimetype="image/png")
+
+
 # ---------------------------------------------------------------------- ui
 
 PAGE = """<!doctype html>
@@ -263,6 +359,13 @@ PAGE = """<!doctype html>
 <h1>Jdon Extract <span style="color:var(--ac)">v2</span></h1>
 <p class="sub">deterministic text-layer pipeline &middot; zero LLM &middot;
 upload corrected ED8 PDF &rarr; extract &rarr; download final_export.zip</p>
+
+<div class="row" style="margin-bottom:18px">
+ <button class="sec big" onclick="location='/review'">&#129489;&#8205;&#9878;&#65039;
+  Review Dashboard</button>
+ <span class="hint">REVIEW-flagged tables edit/approve karo — final zip
+  tab tak locked rehta hai</span>
+</div>
 
 <div class="card"><h2>1 &middot; Upload book PDF</h2>
  <div class="row">
@@ -334,7 +437,12 @@ async function refresh(){
  const g=st.gate;
  $('gate').innerHTML=g.locked
   ? `<span class="badge b-err">GATE LOCKED</span> <span class="hint">${
-      g.why??""}</span>`
+      g.why??""}</span>
+     <div class="row" style="margin-top:10px">
+      <button onclick="location='/review'">&#129489;&#8205;&#9878;&#65039;
+       Open Review Dashboard</button>
+      <span class="hint">tables approve/edit karo, phir export khud
+       unlock ho jayega</span></div>`
   : `<span class="badge b-ok">GATE OPEN</span> <span class="hint">${
       g.chapters} chapter(s) verified on disk</span>`;
  $('zip').innerHTML=st.zip

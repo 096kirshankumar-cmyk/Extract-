@@ -1,1 +1,0 @@
-{"q_id": "TST-001-001", "tables": [{"table_id": "T1", "markdown": "| A | B |\n|---|---|\n| gluedof text | 90% |", "source_pages": [10], "validation": {"table_qa": {"status": "REVIEW", "suspect_fragments": ["gluedof"]}}}]}

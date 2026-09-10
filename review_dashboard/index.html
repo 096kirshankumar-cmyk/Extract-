@@ -71,6 +71,7 @@
   <span class="sub">QA-flagged tables — printed page vs extracted JSON.
     Edit + approve; decisions persist on the server (append-only ledger)
     and gate the final zip.</span>
+  <a href="/">← pipeline</a>
   <span id="zips"></span>
 </header>
 <main>
@@ -166,7 +167,7 @@ function select(i){
     ${md2html(it.markdown, it.suspects)}
     ${it.pages.map(p=>`<div class="pg"><div class="lbl">printed page ${p}
       (120 dpi) — compare every cell with the JSON above</div>
-      <img loading="lazy" src="crops/${it.book.toLowerCase()}_p${String(p).padStart(4,"0")}.png"></div>`).join("")}`;
+      <img loading="lazy" src="/crops/${it.book.toLowerCase()}_p${String(p).padStart(4,"0")}.png"></div>`).join("")}`;
   renderList(); d.scrollTop = 0;
 }
 function editMode(){
