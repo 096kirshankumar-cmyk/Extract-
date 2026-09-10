@@ -5,8 +5,11 @@ Command line:
     python3 -m qbank run --pdf path.pdf --subject BIO [--page-offset auto|N]
     python3 -m qbank export [--dest path.zip]
     python3 -m qbank status
+    python3 -m qbank audit [--book BIO]
+    python3 -m qbank keys
 
-No API keys. No network. Deterministic.
+Extraction is deterministic and needs no API key; the optional Gemini
+table pass uses GEMINI_API_KEYS / GEMINI_API_KEY_1..20 / GEMINI_API_KEY.
 """
 
 from __future__ import annotations
@@ -85,6 +88,32 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_audit(args) -> int:
+    from .audit import audit_book, write_report
+    res = audit_book(config.OUTPUT_ROOT, subject=args.book)
+    path = write_report(config.OUTPUT_ROOT, res)
+    ev = "yes" if res["page_text"] else "MISSING (numeric_drift skipped)"
+    print(f"scanned {res['rows_scanned']} question rows; "
+          f"page-text evidence: {ev}")
+    for kind, n in sorted(res["by_kind"].items()):
+        print(f"  {kind}: {n}")
+    if not res["by_kind"]:
+        print("  no flags")
+    print(f"report -> {path}")
+    return 0
+
+
+def cmd_keys(args) -> int:
+    from . import keypool
+    pool = keypool.get_pool()
+    if pool is None:
+        print("no keys configured (GEMINI_API_KEYS / GEMINI_API_KEY_1..20 /"
+              " GEMINI_API_KEY)")
+        return 0
+    print(json.dumps(pool.summary(), indent=2))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="qbank", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -106,6 +135,15 @@ def main(argv=None) -> int:
 
     p_st = sub.add_parser("status", help="resume state + export gate")
     p_st.set_defaults(fn=cmd_status)
+
+    p_au = sub.add_parser("audit", help="read-only content audit of the "
+                                        "extracted split")
+    p_au.add_argument("--book", help="subject code; default = all")
+    p_au.set_defaults(fn=cmd_audit)
+
+    p_keys = sub.add_parser("keys", help="Gemini key-pool status "
+                                         "(fingerprints only)")
+    p_keys.set_defaults(fn=cmd_keys)
 
     args = ap.parse_args(argv)
     return args.fn(args)

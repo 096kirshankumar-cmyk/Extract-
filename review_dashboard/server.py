@@ -35,6 +35,17 @@ class Handler(SimpleHTTPRequestHandler):
             for book, root in books():
                 items += review.review_tables(root)
             return self._json(items)
+        if self.path == "/api/audit":
+            flags = []
+            for book, root in books():
+                rep = root / "data" / "audit_report.jsonl"
+                if rep.exists():
+                    for line in rep.read_text().splitlines():
+                        if line.strip():
+                            row = json.loads(line)
+                            row["book"] = book
+                            flags.append(row)
+            return self._json(flags)
         if self.path.startswith("/zip/"):
             book = self.path[len("/zip/"):].strip("/").upper()
             for b, root in books():

@@ -78,7 +78,7 @@
   <div id="detail"></div>
 </main>
 <script>
-let DATA = [], sel = null;
+let DATA = [], AUDIT = [], sel = null;
 const esc = s => String(s).replace(/[&<>]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const hl = (s, sus) => { let o = esc(s);
@@ -86,6 +86,7 @@ const hl = (s, sus) => { let o = esc(s);
   return o; };
 async function load(){
   DATA = await (await fetch("/api/queue")).json();
+  AUDIT = await (await fetch("/api/audit")).json();
   const books = [...new Set(DATA.map(d=>d.book))];
   document.getElementById("zips").innerHTML =
     books.map(b=>`<a href="/zip/${b}">${b} zip</a>`).join(" &nbsp; ");
@@ -111,9 +112,36 @@ function renderList(){
         <div class="s">${it.suspects.map(s=>`<span class="chip">${esc(s)}</span>`).join("")||"no suspects"}${it.cross_page?" · cross-page":""}</div></div>`;
     }
   }
+  if (AUDIT.length){
+    const by = {};
+    for (const f of AUDIT) by[f.kind] = (by[f.kind]||0)+1;
+    html += `<div class="grp">Audit scan — ${AUDIT.length} advisory flag(s): ${
+      Object.entries(by).map(([k,n])=>k+" ×"+n).join(", ")}</div>`;
+    AUDIT.forEach((f,i)=>{
+      html += `<div class="item" data-a="${i}" onclick="showAudit(${i})">
+        <span class="st ${f.severity==="HIGH"?"stale":"pending"}">${esc(f.kind)}</span>
+        <div class="t">${esc(f.q_id||f.chapter_id||"")}</div>
+        <div class="s">${esc(f.detail || (f.where+" = "+f.value) || "")}</div></div>`;
+    });
+  }
   el.innerHTML = html;
   document.querySelectorAll(".item").forEach(e=>
     e.classList.toggle("sel", +e.dataset.i === sel));
+}
+function showAudit(i){
+  sel = null; const f = AUDIT[i];
+  document.getElementById("detail").innerHTML =
+    `<h2>Audit flag — ${esc(f.kind)}
+      <span class="st ${f.severity==="HIGH"?"stale":"pending"}">${esc(f.severity)}</span></h2>
+    <div class="meta">${esc(f.book)} · ${esc(f.q_id||"")} · pages ${
+      (f.pages||[]).join(", ")||"—"}</div>
+    <pre class="note">${esc(JSON.stringify(f,null,2))}</pre>
+    <div class="note">Advisory flag from the post-run scan — the output is
+      untouched. Verify against the PDF and decide; the scan never edits.
+      numeric_drift = number absent from the text layer of its own pages ·
+      duplicate_question = same stem extracted twice · thin_options /
+      bad_answer = structural damage.</div>`;
+  renderList(); document.getElementById("detail").scrollTop = 0;
 }
 const md2html = (md, sus) => {
   const rows = md.split("\n").filter(l=>l.trim())

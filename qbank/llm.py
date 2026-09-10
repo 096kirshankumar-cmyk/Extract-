@@ -28,10 +28,13 @@ import hashlib
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pymupdf
+
+from . import keypool
 
 API = ("https://generativelanguage.googleapis.com/v1beta/models/"
        "{model}:generateContent")
@@ -68,7 +71,7 @@ A multi-line cell is ONE string with single spaces between its lines
 
 
 def enabled() -> bool:
-    return bool(os.environ.get("GEMINI_API_KEY")) and \
+    return bool(keypool.discover_keys()) and \
         os.environ.get("QBANK_LLM_TABLES", "1") != "0"
 
 
@@ -389,6 +392,47 @@ def _post(url: str, payload: dict, key: str) -> dict:
             raise
 
 
+def _call(pool, key: str, model: str, payload: dict):
+    """One generateContent exchange with pool-aware key rotation.
+    Returns the parsed rows or None — the caller keeps the
+    deterministic output. A 429 that survives _post's burst retries
+    rotates to the next pool key (bounded by pool size) without
+    spending a parse-retry attempt; anything else gives up on the
+    spot, exactly like the old single-key behaviour."""
+    rot, attempt = 0, 0
+    while attempt < 3:
+        try:
+            k = pool.acquire() if pool is not None else key
+            resp = _post(API.format(model=model), payload, k)
+            if pool is not None:
+                pool.note_call()
+        except urllib.error.HTTPError as e:
+            if pool is not None and e.code == 429 and rot < len(pool.keys):
+                try:
+                    body = e.read().decode("utf-8", "replace")
+                except Exception:
+                    body = ""
+                pool.note_429(body)
+                rot += 1
+                continue
+            return None
+        except Exception:      # network dead / PoolExhausted: det output
+            return None
+        cand = (resp.get("candidates") or [{}])[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        txt = "".join(pt.get("text", "") for pt in parts).strip()
+        if txt:
+            txt = re.sub(r"^```(?:json)?|```$", "", txt)
+            try:
+                rows = json.loads(txt).get("rows")
+            except ValueError:
+                rows = None
+            if rows is not None:
+                return rows
+        attempt += 1           # RECITATION/SAFETY filters: retry
+    return None
+
+
 def _cache_path(cache_dir: Path, book, pg: int, box) -> Path:
     # T2: prompt now mandates layout-spacing repair + no-deletion
     sig = hashlib.sha1(
@@ -398,8 +442,13 @@ def _cache_path(cache_dir: Path, book, pg: int, box) -> Path:
 
 
 def transcriber(cache_dir: Path | None = None, model: str | None = None,
-                key: str | None = None):
-    """Return llm(book, pg, box) -> rows | None (None = keep det)."""
+                key: str | None = None, pool=None):
+    """Return llm(book, pg, box) -> rows | None (None = keep det).
+
+    `key` pins one key (tests, single-key deployments). With no key,
+    the multi-key pool is used and an exhausted key advances to the
+    next instead of ending the run."""
+    pool = pool or (None if key else keypool.get_pool())
     key = key or os.environ.get("GEMINI_API_KEY", "")
     model = model or os.environ.get("QBANK_LLM_MODEL", DEFAULT_MODEL)
 
@@ -423,22 +472,7 @@ def transcriber(cache_dir: Path | None = None, model: str | None = None,
                 "generationConfig": {"temperature": 0.0,
                                      "max_output_tokens": 8192},
             }
-            rows = None
-            for attempt in range(3):
-                resp = _post(API.format(model=model), payload, key)
-                cand = (resp.get("candidates") or [{}])[0]
-                parts = (cand.get("content") or {}).get("parts") or []
-                txt = "".join(pt.get("text", "") for pt in parts).strip()
-                if txt:
-                    txt = re.sub(r"^```(?:json)?|```$", "", txt)
-                    try:
-                        rows = json.loads(txt).get("rows")
-                    except ValueError:
-                        rows = None
-                if rows is not None:
-                    break
-                # RECITATION/SAFETY filters are non-deterministic —
-                # the same image usually passes on a retry
+            rows = _call(pool, key, model, payload)
         except Exception:
             rows = None
         if cache is not None and rows is not None:
@@ -467,10 +501,11 @@ mid-line) — join it only when the combined form is a real term."""
 
 
 def verifier(cache_dir: Path | None = None, model: str | None = None,
-             key: str | None = None):
+             key: str | None = None, pool=None):
     """Second pass for QA-flagged boxes: verify(book, pg, box,
     suspects) -> rows | None. Same envelope applies downstream, so a
     hallucinated answer can never reach the output."""
+    pool = pool or (None if key else keypool.get_pool())
     key = key or os.environ.get("GEMINI_API_KEY", "")
     model = model or os.environ.get("QBANK_LLM_MODEL", DEFAULT_MODEL)
 
@@ -500,20 +535,7 @@ def verifier(cache_dir: Path | None = None, model: str | None = None,
                 "generationConfig": {"temperature": 0.0,
                                      "max_output_tokens": 8192},
             }
-            rows = None
-            for attempt in range(3):
-                resp = _post(API.format(model=model), payload, key)
-                cand = (resp.get("candidates") or [{}])[0]
-                parts = (cand.get("content") or {}).get("parts") or []
-                txt = "".join(pt.get("text", "") for pt in parts).strip()
-                if txt:
-                    txt = re.sub(r"^```(?:json)?|```$", "", txt)
-                    try:
-                        rows = json.loads(txt).get("rows")
-                    except ValueError:
-                        rows = None
-                if rows is not None:
-                    break
+            rows = _call(pool, key, model, payload)
         except Exception:
             rows = None
         if cache is not None and rows is not None:

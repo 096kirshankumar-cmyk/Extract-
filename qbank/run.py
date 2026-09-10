@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 import os
 from collections import Counter
+from pathlib import Path
 
 from . import config
 from .images import ImageStore, claim_chapter_images
@@ -155,6 +156,26 @@ def run_chapter(book: Book, subject: str, ch, store: ImageStore,
     }
 
 
+def dump_page_text(book: Book, path) -> None:
+    """One-shot evidence dump for the post-run audit: file page ->
+    raw text layer, keyed by the SAME file-page numbering the rows'
+    source_pages use. Cheap (text layer only, no renders) and read
+    later by qbank.audit once the PDF itself may be gone."""
+    import json as _json
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        for p in range(1, book.total_pages + 1):
+            try:
+                t = book.doc[p - 1].get_text("text")
+            except Exception:
+                t = ""
+            f.write(_json.dumps({"page": p, "text": t},
+                                ensure_ascii=False) + "\n")
+    tmp.replace(path)
+
+
 def run_book(pdf_path: str, subject: str, page_offset="auto",
              chapters_filter: set | None = None, force: bool = False,
              output_root=None) -> dict:
@@ -167,6 +188,7 @@ def run_book(pdf_path: str, subject: str, page_offset="auto",
     if page_offset == "auto":
         page_offset = detect_page_offset(book)
     book.set_offset(int(page_offset))
+    dump_page_text(book, Path(output_root) / "data" / "page_text.jsonl")
     from .tables import build_vocab
     vocab = build_vocab(book)   # book-wide evidence for space repairs
     llm_fn = verify_fn = None
