@@ -173,3 +173,27 @@ def test_vocab_token_stream_repairs():
     # real words are untouched
     out, n = _repair_tokens(["therefore", "flow"], words, Counter())
     assert " ".join(out) == "therefore flow" and n == 0
+
+
+def test_qa_suspects_evidence_rules():
+    from collections import Counter
+    from qbank.tables import qa_suspects, long_space_suspects
+    words = Counter({"brain": 5, "stem": 5, "brainstem": 6, "dome": 4,
+                     "do": 3, "me": 3, "can": 5, "be": 6,
+                     "mucoperichondrial": 3, "freer": 1, "incision": 2})
+    pairs = Counter({("brain", "stem"): 3, ("do", "me"): 0})
+    m = [["brain stem", "do me", "canbe", "Freer incision"]]
+    s = qa_suspects(m, words, pairs)
+    # spaced pair the book itself prints: legitimate, not a suspect
+    assert "brain" not in s and "stem" not in s
+    # glued collision the book repeats: still caught
+    assert "do" in s and "me" in s
+    # closed-class glue (can+be): the audit's false negative class
+    assert "canbe" in s
+    # proper names never enter via the pair rule
+    assert "Freer" not in s and "incision" not in s
+    # long established terms are not lost-space suspects
+    assert long_space_suspects("Mucoperichondrial flap", words) == []
+    assert long_space_suspects("Intracranialintradural mass", words) == \
+        ["Intracranialintradural"]
+    assert long_space_suspects("anything", None) == []

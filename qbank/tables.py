@@ -103,7 +103,9 @@ _VERIFIED_MERGES = {
 }
 
 _FUNC = frozenset({"the", "not", "of", "a", "an", "in", "on", "at", "is",
-                   "or", "and", "to", "for", "with", "per", "by", "has"})
+                   "or", "and", "to", "for", "with", "per", "by", "has",
+                   "but", "can", "be", "are", "was", "were", "it", "as",
+                   "into", "from", "than", "may", "no", "so", "if"})
 
 
 def _repair_token(tok: str, words: Counter, pairs: Counter) -> tuple:
@@ -464,7 +466,19 @@ def _join_decision(prev, nxt, fill_x1, fill_reaches_edge, vocab=None) -> str:
     return "space"
 
 
-def qa_suspects(matrix: list, words) -> list:
+def long_space_suspects(text: str, words) -> list:
+    """>=12-letter tokens that are NOT established book words — the
+    glued multi-word blob signature. Established long terms
+    (Mucoperichondrial, arteriosclerosis, suprastructures) are
+    legitimate and stay unflagged; without a vocabulary there is no
+    evidence either way, so nothing is flagged."""
+    if words is None:
+        return []
+    return [t for t in _LONG_TOKEN.findall(text)
+            if words.get(t.lower(), 0) < 2]
+
+
+def qa_suspects(matrix: list, words, pairs=None) -> list:
     """Suspect word fragments in a cell matrix, judged with the book's
     own vocabulary. A flag must point at a plausible MALFORMATION,
     never at legitimate multi-word terminology ("brain stem",
@@ -508,6 +522,10 @@ def qa_suspects(matrix: list, words) -> list:
                     continue        # "in"+"to" is not corruption
                 if al in _LEGIT or bl in _LEGIT:
                     continue
+                if a[0].isupper() or b[0].isupper():
+                    continue        # proper-name pairs (Freer incision)
+                if pairs is not None and pairs.get((al, bl), 0) >= 2:
+                    continue        # the book prints the spaced pair
                 j = w.get(al + bl, 0)
                 wa, wb = w.get(al, 0), w.get(bl, 0)
                 # (a) only when the join outscores BOTH parts — the
@@ -631,7 +649,8 @@ def build_box(book, pg: int, box, counts, vocab=None, llm=None,
                         t = re.sub(rf"\b{re.escape(k)}\b", v, t)
                         bt.vocab_fixes += 1
                 t = glyphs.repair(t, counts)
-                for tok in _LONG_TOKEN.findall(t):
+                for tok in long_space_suspects(
+                        t, vocab[0] if vocab is not None else None):
                     bt.warnings.append(f"suspect_lost_space:{tok[:20]}")
             row.append(t)
         if any(row):
@@ -650,7 +669,7 @@ def build_box(book, pg: int, box, counts, vocab=None, llm=None,
         # send the same box back to the model naming them; the answer
         # goes through the identical fidelity envelope
         if verify is not None and vocab is not None:
-            susp = qa_suspects(matrix, vocab[0])
+            susp = qa_suspects(matrix, vocab[0], vocab[1])
             if susp:
                 bt.verify_calls += 1
                 lm2 = verify(book, pg, box, sorted(set(susp))[:8])
@@ -839,7 +858,7 @@ class ChapterTables:
                 matrix += rows
         qa: list = []
         if self.vocab is not None and matrix:
-            qa = qa_suspects(matrix, self.vocab[0])
+            qa = qa_suspects(matrix, self.vocab[0], self.vocab[1])
             # a REVIEW flag is only meaningful when the visual second
             # pass agrees something is wrong: every box that was
             # re-read and came back clean downgrades the flag

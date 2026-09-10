@@ -130,14 +130,15 @@ def build_final_zip(output_root, dest=None) -> dict:
             glyph_fix_total += sum(
                 v for k, v in fixes.items() if k != "unknown_glyph")
 
+    from . import review
     receipt = {
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "output_root": out_root.name,
         "chapters": len(manifest_files),
         "subjects": sorted(subjects),
         "images_shipped": len(referenced),
-        "review_decisions": 0,        # v2 has no human review layer
-        "human_edits": 0,
+        "review_decisions": len(review.load_decisions(out_root)),
+        "human_edits": review.edit_count(out_root),
         "shipped_qa_status_counts": shipped_status or None,
         "glyph_fix_total": glyph_fix_total,
         "llm_tables_repaired": llm_tables,

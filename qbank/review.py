@@ -159,6 +159,13 @@ def apply_table_edit(out_root: Path, book: str, q_id: str, table_id: str,
     return {"ok": True, "copies": touched}
 
 
+def edit_count(out_root: Path) -> int:
+    """Human edits recorded in the append-only ledger (tables +
+    question-level). Receipts surface this so an export can never
+    silently hide manual corrections."""
+    return len(_read_jsonl(Path(out_root) / EDIT_LEDGER))
+
+
 def pending_count(out_root: Path) -> int:
     """REVIEW tables whose decision is missing or stale."""
     return sum(1 for it in review_tables(out_root)
