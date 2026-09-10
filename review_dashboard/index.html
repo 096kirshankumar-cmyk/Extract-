@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Table Review Dashboard — ENT / RAD / ANA</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1a2129; --panel2:#212a34; --ink:#e8edf2;
+          --mut:#93a1b0; --acc:#4cc2ff; --ok:#3ddc84; --warn:#ffb454; --line:#2c3742; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+           display:flex; gap:18px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; }
+  header .sub { color:var(--mut); font-size:12.5px; }
+  header a { color:var(--acc); text-decoration:none; font-size:12.5px; }
+  header a:hover { text-decoration:underline; }
+  main { display:flex; height:calc(100vh - 52px); }
+  #list { width:330px; min-width:280px; overflow-y:auto; border-right:1px solid var(--line); }
+  .grp { padding:10px 14px 4px; color:var(--mut); font-size:11.5px;
+         text-transform:uppercase; letter-spacing:.08em; position:sticky; top:0;
+         background:var(--bg); }
+  .item { padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .item:hover { background:var(--panel); }
+  .item.sel { background:var(--panel2); box-shadow:inset 3px 0 0 var(--acc); }
+  .item .t { font-weight:600; font-size:13px; }
+  .item .s { color:var(--mut); font-size:11.5px; margin-top:2px; }
+  .item .chip { display:inline-block; margin:2px 4px 0 0; padding:1px 7px;
+                border-radius:9px; background:#3a2c17; color:var(--warn);
+                font-size:10.5px; }
+  .item.done .t::after { content:" ✔ reviewed"; color:var(--ok); font-weight:500; }
+  #detail { flex:1; overflow-y:auto; padding:18px 22px; }
+  #detail h2 { font-size:15px; margin:0 0 4px; }
+  #detail .meta { color:var(--mut); font-size:12px; margin-bottom:12px; }
+  #detail .meta b { color:var(--warn); }
+  table.md { border-collapse:collapse; margin:10px 0 18px; background:var(--panel); }
+  table.md th, table.md td { border:1px solid var(--line); padding:6px 9px;
+        font-size:12.5px; vertical-align:top; max-width:420px; }
+  table.md tr:first-child td { background:var(--panel2); font-weight:600; }
+  mark { background:#5a3b12; color:var(--warn); border-radius:3px; padding:0 2px; }
+  .pg { margin:14px 0; }
+  .pg .lbl { color:var(--mut); font-size:12px; margin-bottom:5px; }
+  .pg img { max-width:100%; border:1px solid var(--line); border-radius:6px; }
+  .btn { margin:4px 10px 14px 0; padding:6px 14px; border:1px solid var(--line);
+         background:var(--panel2); color:var(--ink); border-radius:6px; cursor:pointer; }
+  .btn.ok { border-color:var(--ok); color:var(--ok); }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:10px 14px; color:var(--mut); font-size:12.5px; max-width:760px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Table Review Dashboard</h1>
+  <span class="sub">QA-flagged tables (REVIEW queue) — printed page vs extracted JSON.
+    Compare, then mark reviewed. Progress saves in your browser.</span>
+  <a href="/qbank_output_ent/final_export.zip">ENT zip</a>
+  <a href="/qbank_output_rad/final_export.zip">RAD zip</a>
+  <a href="/qbank_output_ana/final_export.zip">ANA zip</a>
+</header>
+<main>
+  <div id="list"></div>
+  <div id="detail"></div>
+</main>
+<script>
+const BOOKS = ["ENT","RAD","ANA"];
+let DATA = [], sel = null;
+const store = {
+  get(k){ try { return localStorage.getItem("rvd_"+k); } catch(e){ return null; } },
+  set(k,v){ try { localStorage.setItem("rvd_"+k, v); } catch(e){} }
+};
+function esc(s){ return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function hl(s, suspects){
+  let out = esc(s);
+  for (const sp of suspects) if (sp)
+    out = out.split(esc(sp)).join("<mark>"+esc(sp)+"</mark>");
+  return out;
+}
+async function load(){
+  for (const b of BOOKS){
+    try {
+      const r = await fetch("data/"+b.toLowerCase()+".json");
+      const items = await r.json();
+      items.forEach(it => { it.book = b; DATA.push(it); });
+    } catch(e){}
+  }
+  renderList();
+  if (DATA.length) select(0);
+  else document.getElementById("detail").innerHTML =
+    "<div class='note'>No REVIEW items found.</div>";
+}
+function renderList(){
+  const el = document.getElementById("list");
+  let html = "";
+  for (const b of BOOKS){
+    const its = DATA.map((it,i)=>[it,i]).filter(([it])=>it.book===b);
+    if (!its.length) continue;
+    html += `<div class="grp">${b} — ${its.length} flagged table(s)</div>`;
+    for (const [it,i] of its){
+      const done = store.get(it.book+"_"+it.table_id) ? " done" : "";
+      html += `<div class="item${done}" data-i="${i}" onclick="select(${i})">
+        <div class="t">${it.table_id} <span style="color:var(--mut);font-weight:400">${it.q_id}</span></div>
+        <div class="s">${it.suspects.map(s=>`<span class="chip">${esc(s)}</span>`).join("")
+          || "no suspect fragments"}${it.cross_page ? " · cross-page" : ""}</div></div>`;
+    }
+  }
+  el.innerHTML = html;
+}
+function md2html(md, suspects){
+  const rows = md.split("\n").filter(l=>l.trim()).filter((l,i)=>!(i===1&&/^[\s|:-]+$/.test(l)));
+  let html = "<table class='md'>";
+  for (const r of rows){
+    html += "<tr>" + r.split("|").slice(1,-1)
+      .map(c=>`<td>${hl(c.trim(), suspects)}</td>`).join("") + "</tr>";
+  }
+  return html + "</table>";
+}
+function select(i){
+  sel = i; const it = DATA[i];
+  document.querySelectorAll(".item").forEach(e=>
+    e.classList.toggle("sel", +e.dataset.i === i));
+  const d = document.getElementById("detail");
+  d.innerHTML = `<h2>${it.book} · ${it.table_id} <span style="color:var(--mut)">(${it.q_id})</span></h2>
+    <div class="meta">suspect fragments: <b>${it.suspects.map(esc).join(", ")||"none"}</b>
+      · pages ${it.pages.join(", ")}${it.cross_page ? " · merged cross-page" : ""}</div>
+    <button class="btn" onclick="toggleDone()">Mark reviewed / unreviewed</button>
+    ${md2html(it.markdown, it.suspects)}
+    ${it.pages.map(p=>`<div class="pg"><div class="lbl">printed page ${p}
+        (120 dpi) — locate the ruled table, compare every cell with the JSON above</div>
+      <img loading="lazy" src="crops/${it.book.toLowerCase()}_p${String(p).padStart(4,"0")}.png"></div>`).join("")}`;
+  d.scrollTop = 0;
+}
+function toggleDone(){
+  const it = DATA[sel];
+  const k = it.book+"_"+it.table_id;
+  store.set(k, store.get(k) ? "" : "1");
+  renderList(); select(sel);
+}
+load();
+</script>
+</body>
+</html>
