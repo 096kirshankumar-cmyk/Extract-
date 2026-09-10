@@ -260,3 +260,8 @@ def test_assets_route(client, tmp_path, monkeypatch):
     assert r.status_code == 200 and r.data == b"WEBPFAKE"
     assert client.get("/assets/../secrets.txt").status_code == 404
     assert client.get("/assets/TST/nope.webp").status_code == 404
+
+def test_export_refused_while_gate_locked(client):
+    r = client.post("/api/export")
+    assert r.status_code == 409
+    assert "REVIEW" in r.get_json()["error"]

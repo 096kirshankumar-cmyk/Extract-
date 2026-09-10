@@ -342,6 +342,7 @@ def api_decision():
             b.get("action", "approve"), b.get("note", ""))
     except KeyError as exc:
         return jsonify(ok=False, error=f"missing field {exc}"), 400
+    _maybe_export()
     return jsonify(row)
 
 
@@ -358,7 +359,32 @@ def api_edit():
         review_mod.record_decision(config.OUTPUT_ROOT, b["book"],
                                    b["q_id"], b["table_id"], b["action"],
                                    "saved via edit")
+        _maybe_export()
     return jsonify(res)
+
+
+def _maybe_export() -> dict | None:
+    """The instant the last pending table is decided the gate opens —
+    rebuild the final zip right then so Download is ready without a
+    re-run. Never raises."""
+    try:
+        if not gate_final_zip(config.OUTPUT_ROOT)["locked"]:
+            return build_final_zip(config.OUTPUT_ROOT)
+    except Exception:                                # noqa: BLE001
+        pass
+    return None
+
+
+@app.post("/api/export")
+def api_export():
+    """Manual trigger: build the review-gated final_export.zip."""
+    gate = gate_final_zip(config.OUTPUT_ROOT)
+    if gate["locked"]:
+        return jsonify(ok=False, error=gate["why"]), 409
+    out = build_final_zip(config.OUTPUT_ROOT)
+    if not out["ok"]:
+        return jsonify(ok=False, error=out["why"]), 409
+    return jsonify(ok=True, zip=str(out["path"]), receipt=out["receipt"])
 
 
 @app.get("/api/question/<q_id>")
@@ -513,6 +539,11 @@ async function upload(){
                             :("error: "+r.error);
  if(r.ok)refresh();
 }
+async function buildExport(){
+ const r=await fetch("/api/export",{method:"POST"}).then(r=>r.json());
+ if(!r.ok){alert("export refused: "+r.error);return}
+ refresh();
+}
 async function fetchLink(){
  const url=$('link').value.trim();
  let subj=$('subject').value;
@@ -567,7 +598,11 @@ async function refresh(){
       st.receipt?` &middot; ${st.receipt.chapters} chapters &middot; ${
       JSON.stringify(st.receipt.shipped_qa_status_counts)}`:""}</span>
      </div>`
-  : '<span class="hint">no export built yet</span>';
+  : (g.locked
+    ? '<span class="hint">no export built yet</span>'
+    : `<div class="row"><button onclick="buildExport()">
+        &#128640; Build export</button>
+       <span class="hint">gate open — zip abhi banao</span></div>`);
  if(runSubj&&st.jobs[runSubj]&&st.jobs[runSubj].status!=="running")tick();
 }
 async function tick(){
