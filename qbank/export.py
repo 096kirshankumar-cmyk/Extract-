@@ -85,6 +85,16 @@ def gate_final_zip(output_root) -> dict:
         problems.append(f"{review_needed} row(s) flagged REVIEW_NEEDED")
     if chapters == 0:
         problems.append("no chapters on disk")
+    # human review layer (adopted): final zip hard-locked while any
+    # REVIEW table is undecided/stale — override QBANK_FORCE_EXPORT=1
+    import os
+    from . import review
+    if os.environ.get("QBANK_FORCE_EXPORT") != "1":
+        pend = review.pending_count(out_root)
+        if pend:
+            problems.append(
+                f"{pend} REVIEW table(s) awaiting human decision "
+                "(see review dashboard; QBANK_FORCE_EXPORT=1 overrides)")
     return {
         "locked": bool(problems),
         "chapters": chapters,
