@@ -73,6 +73,11 @@
     and gate the final zip.</span>
   <a href="/">← pipeline</a>
   <span id="zips"></span>
+  <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+    <input id="qid" placeholder="q_id e.g. ENT-021-008"
+      style="background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:4px 8px;font-size:12px;width:170px">
+    <button class="btn" style="margin:0" onclick="openQ()">Open</button>
+  </span>
 </header>
 <main>
   <div id="list"></div>
@@ -80,8 +85,8 @@
 </main>
 <script>
 let DATA = [], AUDIT = [], sel = null;
-const esc = s => String(s).replace(/[&<>]/g,
-  c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
 const hl = (s, sus) => { let o = esc(s);
   for (const sp of sus) if (sp) o = o.split(esc(sp)).join("<mark>"+esc(sp)+"</mark>");
   return o; };
@@ -141,8 +146,59 @@ function showAudit(i){
       untouched. Verify against the PDF and decide; the scan never edits.
       numeric_drift = number absent from the text layer of its own pages ·
       duplicate_question = same stem extracted twice · thin_options /
-      bad_answer = structural damage.</div>`;
+      bad_answer = structural damage.</div>
+    ${f.q_id?`<button class="btn" style="margin-top:12px"
+      onclick="openQ('${esc(f.q_id)}')">Open question →</button>`:""}`;
   renderList(); document.getElementById("detail").scrollTop = 0;
+}
+async function openQ(id){
+  const qid = (id || document.getElementById("qid").value).trim();
+  if (!qid) return;
+  const r = await fetch("/api/question/"+encodeURIComponent(qid));
+  if (!r.ok){ alert(((await r.json()).error) || "not found"); return; }
+  showQuestion(await r.json());
+}
+function showQuestion(d){
+  sel = null;
+  const q = d.q||{}, a = d.answer||{}, s = d.solution||{};
+  document.getElementById("detail").innerHTML = `
+   <h2>${esc(q.q_id||"")}
+     <span style="color:var(--mut)">(${esc(q.chapter_id||"")})</span></h2>
+   <div class="meta">question-level editor — verified, all copies;
+     table markdown edit ke liye queue item kholo</div>
+   <div style="color:var(--mut);font-size:12px">question_text</div>
+   <textarea id="qt" style="min-height:110px">${esc(q.question_text||"")}</textarea>
+   ${(q.options||[]).map(o=>`<div style="margin:6px 0">
+     <span style="color:var(--warn);font-weight:600">${esc(o.id)}</span>
+     <input data-opt="${esc(o.id)}" value="${esc(o.text||"")}"
+      style="width:calc(100% - 30px);background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font-size:12.5px"></div>`).join("")}
+   <div style="margin:8px 0"><span style="color:var(--mut)">correct_option:</span>
+     <select id="co" style="background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px">
+       ${"ABCD".split("").map(l=>`<option ${l===(a.correct_option||"")?"selected":""}>${l}</option>`).join("")}
+     </select></div>
+   <div style="color:var(--mut);font-size:12px">solution_text</div>
+   <textarea id="st" style="min-height:90px">${esc(s.solution_text||"")}</textarea>
+   <div style="margin-top:8px">
+     <button class="btn ok" onclick="saveQ('${esc(q.q_id||"")}','${esc(d.book)}')">Save edit</button>
+     <span class="msg" id="qmsg"></span></div>
+   ${(q.tables||[]).length?`<div class="note" style="margin-top:12px">${(q.tables||[]).length} table(s) attached — markdown edit queue view me hota hai.</div>`:""}`;
+  renderList(); document.getElementById("detail").scrollTop = 0;
+}
+async function saveQ(qid, book){
+  const patch = {
+    question_text: document.getElementById("qt").value,
+    options: [...document.querySelectorAll("[data-opt]")]
+      .map(i=>({id:i.dataset.opt, text:i.value})),
+    solution_text: document.getElementById("st").value,
+    correct_option: document.getElementById("co").value};
+  const r = await fetch("/api/question/"+encodeURIComponent(qid)+"/edit",
+    {method:"POST", headers:{"Content-Type":"application/json"},
+     body: JSON.stringify({book, patch})});
+  const j = await r.json();
+  const m = document.getElementById("qmsg");
+  if (j.ok){ m.className="msg";
+    m.textContent = `saved to ${j.copies} copie(s), verified ✔`; }
+  else { m.className="msg err"; m.textContent = "refused: "+j.why; }
 }
 const md2html = (md, sus) => {
   const rows = md.split("\n").filter(l=>l.trim())

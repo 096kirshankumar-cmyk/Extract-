@@ -21,11 +21,22 @@ def _mkroot(tmp_path):
     ch.mkdir(parents=True)
     (ch / "questions.jsonl").write_text(json.dumps({
         "q_id": "TST-001-001",
+        "question_text": "Which artery?",
+        "options": [{"id": "A", "text": "RCA",
+                     "images": [{"file": "f1"}]},
+                    {"id": "B", "text": "LAD"},
+                    {"id": "C", "text": "LCX"},
+                    {"id": "D", "text": "PDA"}],
         "tables": [{"table_id": "T1", "markdown": MD,
                     "source_pages": [10],
                     "validation": {"table_qa": {
                         "status": "REVIEW",
                         "suspect_fragments": ["gluedof"]}}}]}) + "\n")
+    (ch / "answers.jsonl").write_text(json.dumps(
+        {"q_id": "TST-001-001", "correct_option": "A"}) + "\n")
+    (ch / "solutions.jsonl").write_text(json.dumps(
+        {"q_id": "TST-001-001", "solution_text": "Because X.",
+         "source_pages": [50]}) + "\n")
     (root / "data").mkdir()
     (root / "data" / "audit_report.jsonl").write_text(json.dumps(
         {"kind": "thin_options", "q_id": "TST-001-001",
@@ -174,3 +185,54 @@ def test_crops_route(client):
     # werkzeug routing — either is fine)
     r = client.get("/crops/..%2fsecret.png")
     assert r.status_code in (400, 404) and r.data != png
+
+def test_question_lookup_case_insensitive_and_404(client):
+    r = client.get("/api/question/tst-001-001")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["q"]["q_id"] == "TST-001-001"
+    assert j["answer"]["correct_option"] == "A"
+    assert j["solution"]["solution_text"] == "Because X."
+    assert client.get("/api/question/NOPE-000-000").status_code == 404
+
+
+def test_question_edit_verified_and_images_preserved(client):
+    r = client.post("/api/question/TST-001-001/edit", json={
+        "book": "TST",
+        "patch": {
+            "question_text": "Which artery is occluded?",
+            "options": [{"id": "A", "text": "Right coronary artery"},
+                        {"id": "B", "text": "LAD"},
+                        {"id": "C", "text": "LCX"},
+                        {"id": "D", "text": "PDA"}],
+            "solution_text": "RCA supplies the inferior wall.",
+            "correct_option": "A"}})
+    j = r.get_json()
+    assert j["ok"], j
+    ch = config.OUTPUT_ROOT / "split" / "TST" / "TST-001"
+    q = json.loads((ch / "questions.jsonl").read_text().splitlines()[0])
+    assert q["question_text"] == "Which artery is occluded?"
+    assert q["options"][0]["text"] == "Right coronary artery"
+    assert q["options"][0]["images"] == [{"file": "f1"}]   # preserved
+    sol = json.loads((ch / "solutions.jsonl").read_text().splitlines()[0])
+    assert sol["solution_text"] == "RCA supplies the inferior wall."
+    ledger = (config.OUTPUT_ROOT / "human_edit_ledger.jsonl").read_text()
+    assert "question_edit" in ledger
+
+
+def test_question_edit_unknown_id_refused(client):
+    r = client.post("/api/question/NOPE-000-000/edit", json={
+        "book": "TST", "patch": {"question_text": "x"}})
+    assert r.get_json()["ok"] is False
+
+def test_question_edit_partial_patch_leaves_options(client):
+    # regression: patch without options must not trip read-back
+    r = client.post("/api/question/TST-001-001/edit", json={
+        "book": "TST", "patch": {"question_text": "Only stem changed"}})
+    j = r.get_json()
+    assert j["ok"], j
+    ch = config.OUTPUT_ROOT / "split" / "TST" / "TST-001"
+    q = json.loads((ch / "questions.jsonl").read_text().splitlines()[0])
+    assert q["question_text"] == "Only stem changed"
+    assert q["options"][0]["text"] == "RCA"          # untouched
+    assert q["options"][0]["images"] == [{"file": "f1"}]

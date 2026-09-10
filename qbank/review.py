@@ -163,3 +163,122 @@ def pending_count(out_root: Path) -> int:
     """REVIEW tables whose decision is missing or stale."""
     return sum(1 for it in review_tables(out_root)
                if it["state"] == "pending" or it["state"].startswith("stale"))
+
+
+# ------------------------------------------------- question-level edits
+
+Q_EDIT_FIELDS = ("question_text", "options", "solution_text",
+                 "correct_option")
+
+
+def find_question(out_root: Path, q_id: str) -> dict | None:
+    """Any question row by q_id (case-insensitive) across all subjects:
+    {book, q, answer, solution} — the shape the dashboard editor
+    renders. None when the id is not on disk."""
+    want = (q_id or "").strip().upper()
+    split = Path(out_root) / "split"
+    if not split.is_dir():
+        return None
+    for sub in sorted(split.iterdir()):
+        if not sub.is_dir():
+            continue
+        for qf in sorted(sub.glob("*/questions.jsonl")):
+            for r in _read_jsonl(qf):
+                if (r.get("q_id") or "").upper() != want:
+                    continue
+                ch = qf.parent
+                ans = next((x for x in _read_jsonl(ch / "answers.jsonl")
+                            if (x.get("q_id") or "").upper() == want), None)
+                sol = next((x for x in _read_jsonl(ch / "solutions.jsonl")
+                            if (x.get("q_id") or "").upper() == want), None)
+                return {"book": sub.name, "q": r, "answer": ans,
+                        "solution": sol}
+    return None
+
+
+def apply_question_edit(out_root: Path, book: str, q_id: str,
+                        patch: dict, note: str = "") -> dict:
+    """Edit question_text / options(text only) / solution_text /
+    correct_option of ONE q_id, in EVERY copy, with read-back
+    verification (same contract as apply_table_edit). Option images
+    and all other fields are preserved untouched. Ledger row kind=
+    question_edit."""
+    want = (q_id or "").strip().upper()
+    patch = {k: v for k, v in (patch or {}).items()
+             if k in Q_EDIT_FIELDS}
+    if not patch:
+        return {"ok": False, "why": "nothing editable in patch"}
+    targets = []
+    if "question_text" in patch or "options" in patch:
+        targets.append(("questions.jsonl",
+                        ("question_text", "options")))
+    if "correct_option" in patch:
+        targets.append(("answers.jsonl", ("correct_option",)))
+    if "solution_text" in patch:
+        targets.append(("solutions.jsonl", ("solution_text",)))
+
+    def _opt_texts():
+        return {str(o.get("id", "")).upper(): str(o.get("text", ""))
+                for o in patch.get("options") or []}
+
+    touched = 0
+    for nf, fields in targets:
+        for qf in sorted((Path(out_root) / "split" / book
+                          ).glob(f"*/{nf}")):
+            lines = qf.read_text().splitlines()
+            changed = False
+            for i, l in enumerate(lines):
+                if not l.strip():
+                    continue
+                r = json.loads(l)
+                if (r.get("q_id") or "").upper() != want:
+                    continue
+                for f in fields:
+                    if f not in patch:
+                        continue
+                    if f == "options":
+                        texts = _opt_texts()
+                        r["options"] = [
+                            {**o, "text": texts.get(
+                                str(o.get("id", "")).upper(),
+                                str(o.get("text", "")))}
+                            for o in (r.get("options") or [])]
+                    else:
+                        r[f] = patch[f]
+                lines[i] = json.dumps(r, ensure_ascii=False)
+                changed = True
+                touched += 1
+            if changed:
+                qf.write_text("\n".join(lines) + "\n")
+
+    # read-back verification — saved only when disk matches
+    for nf, fields in targets:
+        for qf in sorted((Path(out_root) / "split" / book
+                          ).glob(f"*/{nf}")):
+            for r in _read_jsonl(qf):
+                if (r.get("q_id") or "").upper() != want:
+                    continue
+                for f in fields:
+                    if f not in patch:
+                        continue
+                    if f == "options":
+                        got = [(str(o.get("id", "")).upper(),
+                                str(o.get("text", "")))
+                               for o in (r.get("options") or [])]
+                        exp = sorted(_opt_texts().items())
+                        if sorted(got) != exp:
+                            return {"ok": False,
+                                    "why": "read-back mismatch"}
+                    elif r.get(f) != patch[f]:
+                        return {"ok": False, "why": "read-back mismatch"}
+    if touched == 0:
+        return {"ok": False, "why": "question not found"}
+    _append_jsonl(Path(out_root) / EDIT_LEDGER,
+                  {"key": decision_key(book, q_id, "question"),
+                   "kind": "question_edit",
+                   "fields": sorted(patch),
+                   "fp": _fp(json.dumps(patch, sort_keys=True,
+                                        ensure_ascii=False)),
+                   "note": note,
+                   "ts": __import__("time").strftime("%Y-%m-%dT%H:%M:%S")})
+    return {"ok": True, "copies": touched}

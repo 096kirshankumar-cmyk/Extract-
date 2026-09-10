@@ -276,6 +276,13 @@ python -m pytest tests/ -q        # 21 tests, no fixtures needed
 
 ## Web dashboard (Railway)
 
+**Persistence (one-time setup):** the container FS is ephemeral —
+without a volume every deploy wipes runs, ledgers and exports. Add ONE
+Railway Volume mounted at `/out` and set env vars
+`OUTPUT_DIR=/out` and `QBANK_BOOKS=/out/books.json`. (Optionally keep PDFs
+on the same volume: `QBANK_PDFS_DIR=/out/pdfs`.) The app prints a
+startup warning when OUTPUT_DIR is still on the ephemeral FS.
+
 `dashboard.py` is the production web shell (Flask): upload/fetch a book
 PDF, run extraction, watch the log, download the review-gated
 `final_export.zip`. Two more surfaces hang off it:

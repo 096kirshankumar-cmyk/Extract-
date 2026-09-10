@@ -79,6 +79,14 @@ class Handler(SimpleHTTPRequestHandler):
                         self.end_headers()
                         return self.wfile.write(body)
             return self._json({"error": "no zip for book"}, 404)
+        if self.path.startswith("/api/question/"):
+            qid = self.path[len("/api/question/"):].strip("/")
+            got = review.find_question(config.OUTPUT_ROOT, qid)
+            if got is None:
+                return self._json({"ok": False,
+                                   "error": f"no question {qid} on disk"},
+                                  404)
+            return self._json(got)
         if self.path.startswith("/crops/"):
             name = self.path[len("/crops/"):].strip("/")
             if "/" not in name and name.endswith(".png"):
@@ -116,6 +124,12 @@ class Handler(SimpleHTTPRequestHandler):
                     root, body["book"], body["q_id"], body["table_id"],
                     body["action"], "saved via edit")
             return self._json(res)
+        if self.path.startswith("/api/question/") \
+                and self.path.endswith("/edit"):
+            qid = self.path[len("/api/question/"):-len("/edit")].strip("/")
+            return self._json(review.apply_question_edit(
+                root, body.get("book", ""), qid, body.get("patch"),
+                note=body.get("note", "saved via question editor")))
         return self._json({"error": "no route"}, 404)
 
     def _root(self, book):

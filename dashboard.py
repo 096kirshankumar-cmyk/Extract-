@@ -50,6 +50,18 @@ _jobs: dict[str, dict] = {}          # subject -> job record
 _jobs_lock = threading.Lock()
 _pipeline_running = threading.Lock()  # one book at a time
 
+# If OUTPUT_DIR lives on the container's own (ephemeral) filesystem,
+# every deploy wipes runs, ledgers and exports. Warn loudly instead
+# of failing silently; mount a Railway Volume and point OUTPUT_DIR at
+# it (see Dockerfile / README).
+_EPHEMERAL_PREFIXES = ("/app", "/tmp", "/workspace", "/home")
+if not os.environ.get("OUTPUT_DIR") and \
+        str(config.OUTPUT_ROOT).startswith(_EPHEMERAL_PREFIXES):
+    print("WARNING: OUTPUT_DIR is on the ephemeral container FS "
+          f"({config.OUTPUT_ROOT}) — a redeploy WILL wipe all runs. "
+          "Attach a Railway Volume (e.g. /out) and set OUTPUT_DIR=/out "
+          "(+ QBANK_BOOKS=/out/books.json).", flush=True)
+
 
 # --------------------------------------------------------------------- api
 
@@ -346,6 +358,23 @@ def api_edit():
         review_mod.record_decision(config.OUTPUT_ROOT, b["book"],
                                    b["q_id"], b["table_id"], b["action"],
                                    "saved via edit")
+    return jsonify(res)
+
+
+@app.get("/api/question/<q_id>")
+def api_question(q_id: str):
+    got = review_mod.find_question(config.OUTPUT_ROOT, q_id)
+    if got is None:
+        return jsonify(ok=False, error=f"no question {q_id} on disk"), 404
+    return jsonify(got)
+
+
+@app.post("/api/question/<q_id>/edit")
+def api_question_edit(q_id: str):
+    b = request.json or {}
+    res = review_mod.apply_question_edit(
+        config.OUTPUT_ROOT, b.get("book", ""), q_id, b.get("patch"),
+        note=b.get("note", "saved via question editor"))
     return jsonify(res)
 
 
