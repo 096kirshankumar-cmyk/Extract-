@@ -20,6 +20,8 @@ import os
 import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -101,6 +103,56 @@ def api_upload():
     _register_book(subject, name)
     return jsonify(ok=True, subject=subject, file=name,
                    bytes=len(data), pdf_dir=str(PDF_DIR))
+
+
+def _drive_url(url: str) -> str:
+    """Google Drive share links can't be GET directly — map
+    /file/d/<id>/... (and open?id=...) to the export endpoint."""
+    m = re.search(r"/file/d/([A-Za-z0-9_-]{10,})", url) \
+        or re.search(r"[?&]id=([A-Za-z0-9_-]{10,})", url)
+    if m and "drive.google.com" in url:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return url
+
+
+def _save_pdf(data: bytes, name: str, subject: str, note: str):
+    if len(data) > MAX_UPLOAD_BYTES:
+        return jsonify(ok=False, error="file too large"), 413
+    if data[:5] != b"%PDF-":
+        return jsonify(ok=False,
+                       error="not a PDF (bad header) — Drive link sahi "
+                             "hai? (file public/shared honi chahiye)"), 400
+    (PDF_DIR / name).write_bytes(data)
+    _register_book(subject, name, note=note)
+    return jsonify(ok=True, subject=subject, file=name, bytes=len(data))
+
+
+@app.post("/api/fetch")
+def api_fetch():
+    """Book by link (user workflow): Drive/direct URL -> PDF_DIR."""
+    b = request.json or {}
+    url = (b.get("url") or "").strip()
+    subject = (b.get("subject") or "").strip().upper()
+    if not url.startswith(("http://", "https://")):
+        return jsonify(ok=False, error="need an http(s) url"), 400
+    if not re.fullmatch(r"[A-Z0-9]{2,8}", subject):
+        return jsonify(ok=False,
+                       error="subject must be 2-8 chars [A-Z0-9]"), 400
+    url = _drive_url(url)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (qbank dashboard)"})
+    try:
+        with urllib.request.urlopen(req, timeout=900) as r:
+            data = r.read(MAX_UPLOAD_BYTES + 1)
+    except Exception as exc:                           # noqa: BLE001
+        return jsonify(ok=False, error=f"download failed: {exc}"), 502
+    raw = urllib.parse.urlparse(url).path.rstrip("/").split("/")[-1]
+    name = urllib.parse.unquote(raw)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:120] or f"{subject}.pdf"
+    if not name.lower().endswith(".pdf"):
+        name = f"{subject}.pdf"
+    return _save_pdf(data, name, subject,
+                     note=f"fetched from link {time.strftime('%Y-%m-%d')}")
 
 
 def _job_runner(subject: str, force: bool):
@@ -374,6 +426,12 @@ upload corrected ED8 PDF &rarr; extract &rarr; download final_export.zip</p>
          maxlength="8" style="text-transform:uppercase">
   <button id="up" onclick="upload()">Upload</button>
   <span class="hint" id="upmsg"></span>
+ </div>
+ <div class="row" style="margin-top:10px">
+  <input type="text" id="link" placeholder="ya book ka link (Drive/direct URL)"
+         style="width:340px">
+  <button class="sec" onclick="fetchLink()">Fetch link</button>
+  <span class="hint" id="fmsg"></span>
  </div></div>
 
 <div class="card"><h2>2 &middot; Books &amp; runs</h2>
@@ -409,6 +467,19 @@ async function upload(){
  $('up').disabled=false;
  $('upmsg').textContent=r.ok?`registered as ${r.subject} (${mb(r.bytes)})`
                             :("error: "+r.error);
+ if(r.ok)refresh();
+}
+async function fetchLink(){
+ const url=$('link').value.trim();
+ let subj=$('subject').value;
+ if(!subj)subj=prompt("subject code? (2-8 chars, e.g. OBG)")||"";
+ if(!url||!subj){$('fmsg').textContent="link + subject dono chahiye";return}
+ $('fmsg').textContent="downloading...";
+ const r=await fetch("/api/fetch",{method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({url,subject:subj})}).then(r=>r.json());
+ $('fmsg').textContent=r.ok?`registered ${r.subject} (${mb(r.bytes)})`
+                          :("error: "+r.error);
  if(r.ok)refresh();
 }
 async function run(s,force){
@@ -477,4 +548,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     print(f"dashboard on http://0.0.0.0:{port}  "
           f"(pdfs: {PDF_DIR}, output: {config.OUTPUT_ROOT})")
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)

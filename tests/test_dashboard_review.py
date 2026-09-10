@@ -99,6 +99,70 @@ def test_zip_missing_then_present(client):
     assert zipfile.ZipFile(io.BytesIO(r.data)).read("hello.txt") == b"hi"
 
 
+def test_drive_url_mapping():
+    import dashboard
+    assert dashboard._drive_url(
+        "https://drive.google.com/file/d/1iynmgRjzl7L4H_tQd9Gxj-"
+        "3lfdVmDo4Y/view?usp=sharing") == \
+        "https://drive.google.com/uc?export=download&id=" \
+        "1iynmgRjzl7L4H_tQd9Gxj-3lfdVmDo4Y"
+    assert dashboard._drive_url(
+        "https://drive.google.com/open?id=ABC1234567890") == \
+        "https://drive.google.com/uc?export=download&id=ABC1234567890"
+    plain = "https://example.com/x.pdf"
+    assert dashboard._drive_url(plain) == plain
+
+
+def test_fetch_saves_pdf_and_registers_book(client, tmp_path, monkeypatch):
+    import dashboard
+    from qbank import config as cfg
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"%PDF-1.4 fake book"
+
+    monkeypatch.setattr(dashboard.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp())
+    (tmp_path / "pdfs").mkdir()
+    monkeypatch.setattr(dashboard, "PDF_DIR", tmp_path / "pdfs")
+    monkeypatch.setattr(cfg, "BOOKS_FILE", tmp_path / "books.json")
+    cfg.BOOKS_FILE.write_text("{}")
+    r = client.post("/api/fetch", json={
+        "url": "https://example.com/books/obg.pdf", "subject": "OBG"})
+    j = r.get_json()
+    assert j["ok"], j
+    assert (tmp_path / "pdfs" / "obg.pdf").read_bytes() == b"%PDF-1.4 fake book"
+    assert "OBG" in json.loads(cfg.BOOKS_FILE.read_text())
+
+
+def test_fetch_rejects_non_pdf(client, tmp_path, monkeypatch):
+    import dashboard
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"<html>login page</html>"
+
+    monkeypatch.setattr(dashboard.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp())
+    (tmp_path / "pdfs").mkdir()
+    monkeypatch.setattr(dashboard, "PDF_DIR", tmp_path / "pdfs")
+    r = client.post("/api/fetch", json={
+        "url": "https://example.com/x", "subject": "OBG"})
+    assert r.status_code == 400
+
+
 def test_crops_route(client):
     (config.OUTPUT_ROOT / "crops").mkdir()
     png = b"\x89PNG\r\n\x1a\n" + b"0" * 16
