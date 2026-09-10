@@ -22,3 +22,8 @@ ENV QBANK_PDFS_DIR=/pdfs \
 
 # Railway injects $PORT; the dashboard binds 0.0.0.0:$PORT
 CMD ["python", "dashboard.py"]
+
+# Optional Gemini table-vision pass: set GEMINI_API_KEYS (comma separated,
+# keys from SEPARATE Google projects — quota is per project) or
+# GEMINI_API_KEY_1..20 / GEMINI_API_KEY. Without keys the pipeline stays
+# deterministic and the receipt reports llm_tables_repaired: 0 honestly.

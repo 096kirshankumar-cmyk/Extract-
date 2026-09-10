@@ -270,6 +270,11 @@ python -m pytest tests/ -q        # 21 tests, no fixtures needed
 
 ## Environment
 
+`GEMINI_API_KEYS` (comma-separated keys from SEPARATE Google projects)
+enables the optional Gemini table-vision pass — quota is per project, so
+keys inside one project share one bucket. Without keys the pipeline is
+deterministic and receipts say `llm_tables_repaired: 0` honestly.
+
 `OUTPUT_DIR` overrides the output root (default `qbank_output/`);
 `QBANK_PDFS_DIR` adds a PDF search directory; `QBANK_BOOKS` overrides
 `books.json`.

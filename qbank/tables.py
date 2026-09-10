@@ -512,6 +512,19 @@ def qa_suspects(matrix: list, words, pairs=None) -> list:
                 return True
         return False
 
+    def _func_glue(tok):
+        # chained glue: closed-class prefix stuck onto a run that is
+        # itself two book words ("but"+"mobile"+"on") — every part
+        # must be established print, else it is not evidence
+        for k in range(2, len(tok) - 4):
+            if tok[:k] not in _FUNC:
+                continue
+            rest = tok[k:]
+            for j in range(3, len(rest) - 2):
+                if w.get(rest[:j], 0) >= 2 and w.get(rest[j:], 0) >= 2:
+                    return True
+        return False
+
     qa: list = []
     for r in matrix:
         for c in r:
@@ -542,6 +555,8 @@ def qa_suspects(matrix: list, words, pairs=None) -> list:
                     qa.append(t)                    # (d)
                 elif len(lo) >= 3 and _split2(lo):
                     qa.append(t)                    # (c) two-way split
+                elif len(lo) >= 6 and _func_glue(lo):
+                    qa.append(t)                    # (c2) chained glue
                 elif len(lo) >= 3 and (lo in heads or lo in tails):
                     # a fragment only with its complement partner:
                     # "rface" after "su" (join "surface" is printed);
