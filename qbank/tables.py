@@ -124,6 +124,10 @@ def spacing_fix(text: str) -> str:
       "(T3)is"      -> "(T3) is"       after ")"
       "following:Anterior" -> "following: Anterior"
                                        one space after ":" too
+      "membrane.It"   -> "membrane. It"
+      "( parasellar )"-> "(parasellar)"
+      "the   patient" -> "the patient"
+      "(EAC) ."     -> "(EAC)."  /  "below :" -> "below:"
 
     Safe: bare "D4"/"T3" untouched; "HbA1c", "C2H5OH", "vitamin B12"
     are never split (A/B are not in the notation set; an uppercase
@@ -140,12 +144,33 @@ def spacing_fix(text: str) -> str:
                  " ", out)
     # vertebral notation + lowercase word ("D4vertebra", "T3nerve")
     out = re.sub(r"(?<=[CDTLS]\d)(?=[a-z])", " ", out)
+    # no space BEFORE sentence punctuation: reflow artifacts like
+    # "(EAC) ." or "given below :" — the source prints "(EAC)." and
+    # "below:" (verified against the ENT text layer)
+    out = re.sub(r"(?<=[^\s]) +([.,;:?!])", r"\1", out)
     # colon: exactly one space after it — but never inside digit
     # ratios/times ("1:1000" adrenaline, "10:30") or URLs ("http://")
     out = re.sub(r"(?<!\d): *(?=[^\s:/])", ": ", out)
+    # NOTE: no comma/semicolon space insertion here — the ENT source
+    # itself prints compact notations like "(C2,C3)", so inserting a
+    # space is NOT source-backed (source-fidelity rule). Table cells
+    # keep the evidence-based comma split in _repair_token.
+    # sentence collision ("membrane.It") — a lowercase letter before
+    # the stop and an uppercase start after: unambiguous new sentence;
+    # initials ("J.K.Rowling") and versions ("v1.2Beta") untouched
+    out = re.sub(r"(?<=[a-z])[.?!](?=[A-Z])",
+                 lambda m: m.group(0) + " ", out)
     # brackets: exactly one space before "(" and after ")"
     out = re.sub(r"(?<=[^\s(]) *\(", " (", out)
-    out = re.sub(r"\) *(?=[^\s)])", ") ", out)
+    # space after ")" only before word characters — never before
+    # punctuation ("(EAC)." stays glued, source-true)
+    out = re.sub(r"\) *(?=[A-Za-z0-9(])", ") ", out)
+    # no padding immediately INSIDE brackets ("( parasellar )")
+    out = re.sub(r"\(\s+", "(", out)
+    out = re.sub(r"\s+\)", ")", out)
+    # accidental multiple spaces collapse to one (prose only in
+    # practice: table cells arrive here as single-space tokens)
+    out = re.sub(r" {2,}", " ", out)
     return out
 
 

@@ -214,6 +214,17 @@ def test_spacing_fix_ordinals_notations_brackets():
     assert spacing_fix("following:Anterior") == "following: Anterior"
     assert spacing_fix("Causes:1. Trauma") == "Causes: 1. Trauma"
     assert spacing_fix("Note:   see this") == "Note: see this"
+    # no space before punctuation (reflow artifacts)
+    assert spacing_fix("(EAC) . EAC measures") == "(EAC). EAC measures"
+    assert spacing_fix("given below :") == "given below:"
+    # sentence collision
+    assert spacing_fix("membrane.It") == "membrane. It"
+    # compact source notations are NEVER spaced out (source-fidelity)
+    assert spacing_fix("(C2,C3)") == "(C2,C3)"
+    # no padding inside brackets + prose space collapse
+    assert spacing_fix("( parasellar )") == "(parasellar)"
+    assert spacing_fix("( CWU )") == "(CWU)"
+    assert spacing_fix("the   patient") == "the patient"
     # one space before "(" and after ")"
     assert spacing_fix("nerve(T3)") == "nerve (T3)"
     assert spacing_fix("(T3)is") == "(T3) is"
@@ -222,5 +233,6 @@ def test_spacing_fix_ordinals_notations_brackets():
     for keep in ("D4", "T3", "T3, T4", "HbA1c", "C2H5OH",
                  "vitamin B12", "upper 1/3rd", "(see figure 1)",
                  "the 1st rib", "1:1000", "10:30", "http://x.com",
-                 "Causes:"):
+                 "Causes:", "5,000", "1.3:1", "J.K.Rowling",
+                 "v1.2Beta", "0,5", "e.g.", "B/L"):
         assert spacing_fix(keep) == keep
