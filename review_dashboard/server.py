@@ -68,8 +68,6 @@ class Handler(SimpleHTTPRequestHandler):
             for b, root in books():
                 if b == book:
                     z = root / f"final_export_{book}.zip"
-                    if not z.exists():
-                        z = root / "final_export.zip"
                     if z.exists():
                         self.send_response(200)
                         self.send_header("Content-Type", "application/zip")

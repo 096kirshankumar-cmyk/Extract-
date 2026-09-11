@@ -108,6 +108,42 @@ _FUNC = frozenset({"the", "not", "of", "a", "an", "in", "on", "at", "is",
                    "into", "from", "than", "may", "no", "so", "if"})
 
 
+_ORD_TAIL = r"(?:st|nd|rd|th)"
+
+
+def spacing_fix(text: str) -> str:
+    """Deterministic spacing fixes for the glue shapes the text layer
+    leaves behind (reviewer-directed; purely shape-based, no vocab):
+
+      "1strib"      -> "1st rib"       ordinal glued onto a word
+      "the1st"      -> "the 1st"
+      "vertebraD4"  -> "vertebra D4"   vertebral notation (C/D/T/L/S +
+      "T3nerve"     -> "T3 nerve"       1-2 digits) never mixes with a
+                                        word
+      "nerve(T3)"   -> "nerve (T3)"    one space before "(" and
+      "(T3)is"      -> "(T3) is"       after ")"
+
+    Safe: bare "D4"/"T3" untouched; "HbA1c", "C2H5OH", "vitamin B12"
+    are never split (A/B are not in the notation set; an uppercase
+    letter after digits is never separated)."""
+    out = text
+    # ordinal glued onto the following word ("1strib", "12thrib")
+    out = re.sub(rf"(?<=\d){_ORD_TAIL}(?=[A-Za-z])",
+                 lambda m: m.group(0) + " ", out)
+    # word glued onto an ordinal ("the1st", "Chapter4th")
+    out = re.sub(rf"(?<=[A-Za-z])(?=\d{{1,2}}{_ORD_TAIL}(?![0-9A-Za-z]))",
+                 " ", out)
+    # word + vertebral notation ("vertebraD4", "inT3")
+    out = re.sub(r"(?<=[A-Za-z])(?=[CDTLS]\d{1,2}(?![0-9A-Za-z]))",
+                 " ", out)
+    # vertebral notation + lowercase word ("D4vertebra", "T3nerve")
+    out = re.sub(r"(?<=[CDTLS]\d)(?=[a-z])", " ", out)
+    # brackets: exactly one space before "(" and after ")"
+    out = re.sub(r"(?<=[^\s(]) *\(", " (", out)
+    out = re.sub(r"\) *(?=[^\s)])", ") ", out)
+    return out
+
+
 def _repair_token(tok: str, words: Counter, pairs: Counter) -> tuple:
     """Publisher misprints inside ONE token, repaired only with
     book-internal evidence:
@@ -347,6 +383,11 @@ def _repair_tokens(parts: list, words: Counter, pairs: Counter) -> tuple:
             continue
         out.append(t)
         j += 1
+    # ordinals / vertebral notations / brackets: deterministic spacing
+    for k, t in enumerate(out):
+        ft = spacing_fix(t)
+        if ft != t:
+            out[k], nfix = ft, nfix + 1
     return out, nfix
 
 

@@ -197,3 +197,25 @@ def test_qa_suspects_evidence_rules():
     assert long_space_suspects("Intracranialintradural mass", words) == \
         ["Intracranialintradural"]
     assert long_space_suspects("anything", None) == []
+
+
+def test_spacing_fix_ordinals_notations_brackets():
+    from qbank.tables import spacing_fix
+    # ordinals never stay glued to words
+    assert spacing_fix("1strib") == "1st rib"
+    assert spacing_fix("12thrib") == "12th rib"
+    assert spacing_fix("4thnerve") == "4th nerve"
+    assert spacing_fix("the1st") == "the 1st"
+    # vertebral notations stay separate from words
+    assert spacing_fix("vertebraD4") == "vertebra D4"
+    assert spacing_fix("D4vertebra") == "D4 vertebra"
+    assert spacing_fix("T3nerve") == "T3 nerve"
+    # one space before "(" and after ")"
+    assert spacing_fix("nerve(T3)") == "nerve (T3)"
+    assert spacing_fix("(T3)is") == "(T3) is"
+    assert spacing_fix("word  (x)  y") == "word (x) y"
+    # never split legitimate forms
+    for keep in ("D4", "T3", "T3, T4", "HbA1c", "C2H5OH",
+                 "vitamin B12", "upper 1/3rd", "(see figure 1)",
+                 "the 1st rib"):
+        assert spacing_fix(keep) == keep

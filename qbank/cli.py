@@ -70,8 +70,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_export(args) -> int:
-    res = build_final_zip(config.OUTPUT_ROOT, dest=args.dest,
-                          subject=args.book)
+    res = build_final_zip(config.OUTPUT_ROOT, args.book, dest=args.dest)
     if not res["ok"]:
         print(f"REFUSED: {res['why']}", file=sys.stderr)
         return 3
@@ -83,9 +82,13 @@ def cmd_export(args) -> int:
 def cmd_status(args) -> int:
     state = state_mod.load_state()
     print(json.dumps(state.get("pdf_progress", {}), indent=2))
-    gate = gate_final_zip(config.OUTPUT_ROOT)
-    print("export gate:", "OPEN (zip can build)" if not gate["locked"]
-          else f"LOCKED — {gate['why']}")
+    split = config.OUTPUT_ROOT / "split"
+    for d in sorted(split.glob("*")) if split.is_dir() else []:
+        if d.is_dir():
+            gate = gate_final_zip(config.OUTPUT_ROOT, d.name)
+            print(f"export gate {d.name}:",
+                  "OPEN (zip can build)" if not gate["locked"]
+                  else f"LOCKED — {gate['why']}")
     return 0
 
 
@@ -130,11 +133,13 @@ def main(argv=None) -> int:
                        help="re-extract chapters already marked done")
     p_run.set_defaults(fn=cmd_run)
 
-    p_exp = sub.add_parser("export", help="build final_export zip "
-                                          "(per book with --book)")
+    p_exp = sub.add_parser("export", help="build the independent "
+                                          "final_export_<CODE>.zip "
+                                          "for ONE book")
     p_exp.add_argument("--dest", default=None)
-    p_exp.add_argument("--book", help="subject code: independent zip "
-                                      "for that book only")
+    p_exp.add_argument("--book", required=True,
+                       help="subject code (e.g. ENT): one book, one "
+                            "gate, one zip")
     p_exp.set_defaults(fn=cmd_export)
 
     p_st = sub.add_parser("status", help="resume state + export gate")

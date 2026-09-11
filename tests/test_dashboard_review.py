@@ -102,7 +102,7 @@ def test_edit_missing_fields_400(client):
 
 def test_zip_missing_then_present(client):
     assert client.get("/zip/TST").status_code == 404
-    zp = config.OUTPUT_ROOT / "final_export.zip"
+    zp = config.OUTPUT_ROOT / "final_export_TST.zip"
     with zipfile.ZipFile(zp, "w") as z:
         z.writestr("hello.txt", "hi")
     r = client.get("/zip/TST")
@@ -262,7 +262,11 @@ def test_assets_route(client, tmp_path, monkeypatch):
     assert client.get("/assets/TST/nope.webp").status_code == 404
 
 def test_export_refused_while_gate_locked(client):
-    r = client.post("/api/export")
+    # no subject -> 400 (there is no combined export any more)
+    assert client.post("/api/export").status_code == 400
+    assert client.get("/download").status_code == 400
+    # the book's own gate locks ITS zip
+    r = client.post("/api/export", json={"subject": "TST"})
     assert r.status_code == 409
     assert "REVIEW" in r.get_json()["error"]
 
@@ -290,7 +294,6 @@ def test_per_book_gate_and_independent_zip(client):
     # TST still has a pending REVIEW table; AAA is clean
     assert gate_final_zip(root, "AAA")["locked"] is False
     assert gate_final_zip(root, "TST")["locked"] is True
-    assert gate_final_zip(root)["locked"] is True
     # independent zip: AAA builds, TST refused, AAA zip has no TST files
     r = client.post("/api/export", json={"subject": "AAA"})
     assert r.status_code == 200, r.get_json()

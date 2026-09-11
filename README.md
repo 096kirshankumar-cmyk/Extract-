@@ -36,7 +36,7 @@ question headers, answer-key rows and solution headers do not match.
 ├── requirements.txt
 ├── Dockerfile
 └── qbank_output/          # Generated (gitignored): split/, assets/,
-                           #   data/, subjects/, final_export.zip
+                           #   data/, subjects/, final_export_<CODE>.zip
 ```
 
 ## What v2 does differently
@@ -54,7 +54,7 @@ The output contract is unchanged: `split/{SUBJ}/{SUBJ}-NNN/` with
 `unresolved_qids.jsonl`, `orphans.jsonl`, `image_manifest.jsonl`,
 `chapter_completeness.json`; `assets/questions/{SUBJ}/*.webp`;
 `data/chapters.json`, `data/image_ownership.jsonl`;
-`subjects/{SUBJ}/chapters.json`; `final_export.zip` +
+`subjects/{SUBJ}/chapters.json`; `final_export_<CODE>.zip` +
 `REVIEW_RECEIPT.json`. See `FORMAT.md`.
 
 ## Quickstart
@@ -65,7 +65,6 @@ pip install -r requirements.txt
 # put the book PDFs in pdfs/ (gitignored) or point QBANK_PDFS_DIR at a dir
 python -m qbank run --book BIO              # extract (resumable per chapter)
 python -m qbank status                      # progress + export-gate report
-python -m qbank export                      # gate + build final_export.zip
 python -m qbank export --book ENT           # ENT-only zip, ENT-only gate
 ```
 
@@ -98,9 +97,8 @@ python dashboard.py        # binds 0.0.0.0:$PORT (default 8000)
   one book at a time; the export step runs automatically afterwards
 - **Download** — every book gets its OWN `final_export_<CODE>.zip` with its
   OWN gate (only that book's completeness + review queue must be clear), so
-  running a new book never reopens or blocks the old book's zip. A combined
-  `final_export.zip` of all books stays available when every gate is clear
-  (gate status + receipt shown inline)
+  running a new book never reopens or blocks the old book's zip. There is
+  no combined all-books export — one book, one gate, one zip
 
 On Railway: mount a Volume at `/out` so the zip survives redeploys
 (and optionally `/pdfs` for uploads). Railway injects `$PORT`; the
@@ -295,8 +293,8 @@ on the same volume: `QBANK_PDFS_DIR=/out/pdfs`.) The app prints a
 startup warning when OUTPUT_DIR is still on the ephemeral FS.
 
 `dashboard.py` is the production web shell (Flask): upload/fetch a book
-PDF, run extraction, watch the log, download the review-gated
-`final_export.zip`. Two more surfaces hang off it:
+PDF, run extraction, watch the log, download the review-gated per-book `final_export_<CODE>.zip`
+(one book, one gate, one zip). Two more surfaces hang off it:
 
 - `/review` — the human review dashboard: every REVIEW-flagged table,
   printed-page crop beside the extracted JSON, in-place edit + approve.

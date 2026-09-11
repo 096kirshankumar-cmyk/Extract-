@@ -34,11 +34,9 @@ def _read_jsonl(p: Path):
             if l.strip()]
 
 
-def _split_glob(out_root: Path, subject: str | None, name: str):
-    if subject:
-        return sorted((out_root / "split" / subject).glob(f"*/{name}")) \
-            if (out_root / "split" / subject).is_dir() else []
-    return sorted((out_root / "split").glob(f"*/*/{name}"))
+def _split_glob(out_root: Path, subject: str, name: str):
+    return sorted((out_root / "split" / subject).glob(f"*/{name}")) \
+        if (out_root / "split" / subject).is_dir() else []
 
 
 def _llm_used(out_root: Path) -> bool:
@@ -50,7 +48,7 @@ def _llm_used(out_root: Path) -> bool:
     return False
 
 
-def _table_stats(out_root: Path, subject: str | None = None) -> tuple:
+def _table_stats(out_root: Path, subject: str) -> tuple:
     """(gemini_repaired_tables, qa_review_tables) over shipped rows."""
     seen, gem, review = set(), 0, 0
     for nf in ("questions.jsonl", "solutions.jsonl"):
@@ -70,10 +68,10 @@ def _table_stats(out_root: Path, subject: str | None = None) -> tuple:
     return gem, review
 
 
-def gate_final_zip(output_root, subject: str | None = None) -> dict:
-    """subject=None => whole volume; subject=CODE => only that book's
-    chapters + its REVIEW tables gate ITS zip (a new book's run never
-    re-locks an already-shipped one)."""
+def gate_final_zip(output_root, subject: str) -> dict:
+    """One book, one gate: only subject=CODE's chapters + its REVIEW
+    tables gate ITS zip. Other books can never lock it, and a new
+    book's run never re-locks an already-shipped one."""
     out_root = Path(output_root)
     problems = []
     review_needed = 0
@@ -93,8 +91,7 @@ def gate_final_zip(output_root, subject: str | None = None) -> dict:
     if review_needed:
         problems.append(f"{review_needed} row(s) flagged REVIEW_NEEDED")
     if chapters == 0:
-        problems.append("no chapters on disk"
-                        + (f" for {subject}" if subject else ""))
+        problems.append(f"no chapters on disk for {subject}")
     # human review layer (adopted): final zip hard-locked while any
     # REVIEW table is undecided/stale — override QBANK_FORCE_EXPORT=1
     import os
@@ -112,18 +109,16 @@ def gate_final_zip(output_root, subject: str | None = None) -> dict:
     }
 
 
-def build_final_zip(output_root, dest=None,
-                    subject: str | None = None) -> dict:
-    """subject=CODE builds an INDEPENDENT zip for that book only
-    (final_export_<CODE>.zip): its split, its chapters.json, only its
+def build_final_zip(output_root, subject: str, dest=None) -> dict:
+    """One book, one INDEPENDENT zip: final_export_<CODE>.zip holds
+    only that book's split, its chapters.json and only its
     manifest-referenced assets. Other books' zips stay untouched."""
     out_root = Path(output_root)
     gate = gate_final_zip(out_root, subject)
     if gate["locked"]:
         return {"ok": False, "locked": True, "why": gate["why"]}
 
-    dest = Path(dest or (out_root / (
-        f"final_export_{subject}.zip" if subject else "final_export.zip")))
+    dest = Path(dest or (out_root / f"final_export_{subject}.zip"))
     referenced = set()
     subjects = set()
     manifest_files = _split_glob(out_root, subject, "image_manifest.jsonl")
@@ -173,14 +168,9 @@ def build_final_zip(output_root, dest=None,
         for name in sorted(SPLIT_KEEP):
             for p in _split_glob(out_root, subject, name):
                 z.write(p, str(p.relative_to(out_root)))
-        subj_dir = out_root / "subjects"
-        if subj_dir.exists():
-            wanted = [subject] if subject else \
-                [c.name for c in sorted(subj_dir.iterdir()) if c.is_dir()]
-            for s in wanted:
-                cj = subj_dir / s / "chapters.json"
-                if cj.exists():
-                    z.write(cj, str(cj.relative_to(out_root)))
+        cj = out_root / "subjects" / subject / "chapters.json"
+        if cj.exists():
+            z.write(cj, str(cj.relative_to(out_root)))
         aroot = out_root / "assets" / "questions"
         for rel in sorted(referenced):
             p = aroot / rel

@@ -21,7 +21,7 @@ from collections import Counter
 from . import glyphs
 from .config import (GRADE_RESOLVED, GRADE_RESOLVED_ANCHORED, PROV_TEXT_LAYER,
                      QA_INCOMPLETE, QA_READY, QA_REVIEW_NEEDED)
-from .tables import ChapterTables
+from .tables import ChapterTables, spacing_fix
 from .textlayer import Book, Line, reflow
 from .zones import ChapterScan
 
@@ -170,7 +170,7 @@ def build_chapter_records(book: Book, scan: ChapterScan,
                 table_regions[(qn, "Q")] = q_regions
             stem_lines, opts_raw, markers = _split_stem_options(body)
             option_markers[qn] = markers
-            stem = glyphs.repair(reflow(stem_lines), counts)
+            stem = spacing_fix(glyphs.repair(reflow(stem_lines), counts))
             rec["question_text"] = stem
             for letter in "abcd":
                 raw = opts_raw.get(letter)
@@ -181,10 +181,10 @@ def build_chapter_records(book: Book, scan: ChapterScan,
                     (seed if isinstance(item, str) else rest).append(item)
                 text = " ".join(seed) if seed else ""
                 if rest:
-                    tail = glyphs.repair(reflow(rest), counts)
+                    tail = spacing_fix(glyphs.repair(reflow(rest), counts))
                     text = (text + " " + tail).strip() if text else tail
-                rec["options"][letter.upper()] = glyphs.repair(text, counts) \
-                    if text else text
+                rec["options"][letter.upper()] = \
+                    spacing_fix(glyphs.repair(text, counts)) if text else text
             for ln in body:
                 rec["source_pages"].add(ln.page)
             rec["source_pages"].add(rec["q_header_page"])
@@ -204,7 +204,8 @@ def build_chapter_records(book: Book, scan: ChapterScan,
             rec["tables"].extend(s_tables)
             if s_regions:
                 table_regions[(qn, "SOL")] = s_regions
-            rec["solution_text"] = glyphs.repair(reflow(sol_lines), counts)
+            rec["solution_text"] = spacing_fix(
+                glyphs.repair(reflow(sol_lines), counts))
             for ln in sol_lines:
                 rec["source_pages"].add(ln.page)
             rec["source_pages"].add(rec["s_header_page"])

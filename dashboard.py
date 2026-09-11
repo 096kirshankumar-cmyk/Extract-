@@ -2,7 +2,7 @@
 Thin web shell around the deterministic CLI pipeline.
 
     upload a corrected book PDF  ->  run extraction  ->  download
-    final_export.zip
+    final_export_<CODE>.zip   (one book, one zip)
 
 The extraction core (qbank/) is untouched: this dashboard only
 transports files in and out and shells out to the same functions the
@@ -181,7 +181,7 @@ def _job_runner(subject: str, force: bool):
                                force=force)
                 job["log"].append("")
                 job["log"].append(f"=== export {subject} ===")
-                out = build_final_zip(config.OUTPUT_ROOT, subject=subject)
+                out = build_final_zip(config.OUTPUT_ROOT, subject)
             job["log"].append("")
             job["log"].append("=== review assets ===")
             try:
@@ -272,10 +272,9 @@ def api_status():
             "zip": (config.OUTPUT_ROOT /
                     f"final_export_{subj}.zip").exists(),
         })
-    gate = gate_final_zip(config.OUTPUT_ROOT)
     zips = {}
-    for z in sorted(config.OUTPUT_ROOT.glob("final_export*.zip")):
-        key = z.stem[len("final_export"):].strip("_").upper() or "ALL"
+    for z in sorted(config.OUTPUT_ROOT.glob("final_export_*.zip")):
+        key = z.stem[len("final_export_"):].strip("_").upper()
         with zipfile.ZipFile(z) as zf:
             try:
                 rc = json.loads(zf.read("REVIEW_RECEIPT.json"))
@@ -286,35 +285,29 @@ def api_status():
                                             time.localtime(
                                                 z.stat().st_mtime)),
                      "receipt": rc}
-    zp = _zip_for(None)
-    return jsonify(books=rows, gate=gate, zips=zips,
-                   zip=zips.get("ALL") or next(iter(zips.values()), None),
-                   receipt=(zips.get("ALL") or {}).get("receipt"),
+    return jsonify(books=rows, zips=zips,
                    running=any(j["status"] == "running"
                                for j in _jobs.values()),
                    jobs={s: {"status": j["status"], "error": j["error"]}
                          for s, j in _jobs.items()})
 
 
-def _zip_for(subject: str | None):
-    root = config.OUTPUT_ROOT
-    if subject:
-        zp = root / f"final_export_{subject}.zip"
-        return zp if zp.exists() else None
-    zp = root / "final_export.zip"
-    if zp.exists():
-        return zp
-    singles = sorted(root.glob("final_export_*.zip"))
-    return singles[0] if len(singles) == 1 else None
+def _zip_for(subject: str):
+    zp = config.OUTPUT_ROOT / f"final_export_{subject}.zip"
+    return zp if zp.exists() else None
 
 
 @app.get("/download")
 def download():
-    subj = (request.args.get("subject") or "").strip().upper() or None
+    subj = (request.args.get("subject") or "").strip().upper()
+    if not subj:
+        return jsonify(ok=False,
+                       error="subject chahiye — one book, one zip"), 400
     zp = _zip_for(subj)
     if zp is None:
         return jsonify(ok=False,
-                       error="no export yet — run a book / build it"), 404
+                       error=f"no export yet for {subj} — run it / "
+                       f"build it"), 404
     return send_file(zp, as_attachment=True, download_name=zp.name)
 
 
@@ -392,14 +385,17 @@ def _maybe_export(book: str | None = None) -> dict | None:
 
 @app.post("/api/export")
 def api_export():
-    """Manual trigger: per-book independent zip ({"subject": CODE}),
-    or the combined all-books zip when no subject is given."""
+    """Manual trigger: ONE book's independent zip ({"subject": CODE}).
+    There is no combined all-books export any more."""
     subj = ((request.get_json(silent=True) or {}).get("subject")
-            or "").strip().upper() or None
+            or "").strip().upper()
+    if not subj:
+        return jsonify(ok=False, error="subject chahiye — one book, "
+                                       "one zip"), 400
     gate = gate_final_zip(config.OUTPUT_ROOT, subj)
     if gate["locked"]:
         return jsonify(ok=False, error=gate["why"]), 409
-    out = build_final_zip(config.OUTPUT_ROOT, subject=subj)
+    out = build_final_zip(config.OUTPUT_ROOT, subj)
     if not out["ok"]:
         return jsonify(ok=False, error=out["why"]), 409
     return jsonify(ok=True, zip=str(out["path"]), receipt=out["receipt"])
@@ -439,8 +435,12 @@ def api_question_edit(q_id: str):
 
 @app.get("/zip/<book>")
 def zip_for_book(book: str):
-    """Review-dashboard zip link: the (review-gated) final export."""
-    return download()
+    """Review-dashboard zip link: that book's own final export."""
+    zp = _zip_for(book.strip().upper())
+    if zp is None:
+        return jsonify(ok=False,
+                       error=f"no export yet for {book}"), 404
+    return send_file(zp, as_attachment=True, download_name=zp.name)
 
 
 @app.get("/crops/<name>")
@@ -498,7 +498,7 @@ PAGE = """<!doctype html>
 </style></head><body><div class="wrap">
 <h1>Jdon Extract <span style="color:var(--ac)">v2</span></h1>
 <p class="sub">deterministic text-layer pipeline &middot; zero LLM &middot;
-upload corrected ED8 PDF &rarr; extract &rarr; download final_export.zip</p>
+upload PDF &rarr; extract &rarr; review &rarr; download final_export_<CODE>.zip</p>
 
 <div class="row" style="margin-bottom:18px">
  <button class="sec big" onclick="location='/review'">&#129489;&#8205;&#9878;&#65039;
@@ -558,9 +558,10 @@ async function upload(){
  if(r.ok)refresh();
 }
 async function buildExport(s){
+ if(!s){alert("book code chahiye — one book, one zip");return}
  const r=await fetch("/api/export",{method:"POST",
   headers:{"Content-Type":"application/json"},
-  body:JSON.stringify(s?{subject:s}:{})}).then(r=>r.json());
+  body:JSON.stringify({subject:s})}).then(r=>r.json());
  if(!r.ok){alert("export refused: "+(r.error||"?"));return}
  refresh();
 }
@@ -607,30 +608,30 @@ async function refresh(){
     <button class="sec" ${st.running?"disabled":""}
      onclick="run('${b.subject}',true)">Re-run</button> ${zb}</td></tr>`;
  }).join("")||'<tr><td colspan=6 class="hint">no books yet</td></tr>';
- const g=st.gate;
- $('gate').innerHTML=g.locked
-  ? `<span class="badge b-err">GATE LOCKED</span> <span class="hint">${
-      g.why??""}</span>
-     <div class="row" style="margin-top:10px">
+ const locked=st.books.filter(b=>b.gate_locked===true);
+ const ready=st.books.filter(b=>b.gate_locked===false);
+ $('gate').innerHTML=
+  (locked.length
+   ? `<span class="badge b-err">GATE LOCKED: ${
+       locked.map(b=>b.subject).join(", ")}</span>
+      <div class="row" style="margin-top:10px">
       <button onclick="location='/review'">&#129489;&#8205;&#9878;&#65039;
        Open Review Dashboard</button>
-      <span class="hint">tables approve/edit karo, phir export khud
-       unlock ho jayega</span></div>`
-  : `<span class="badge b-ok">GATE OPEN</span> <span class="hint">${
-      g.chapters} chapter(s) verified on disk</span>`;
- $('zip').innerHTML=
-  (Object.keys(st.zips||{}).length
-   ? `<div class="row" style="flex-wrap:wrap">${Object.entries(st.zips).map(
-      ([k,z])=>`<button onclick="location='/download?subject=${
-        k==="ALL"?"":k}'">&#11015; ${z.name}</button>
-        <span class="hint">${k} &middot; ${mb(z.bytes)} &middot; ${
-        z.mtime}</span>`).join("&nbsp; ")}</div>`
-   : "") +
-  (g.locked
-   ? '<span class="hint">no combined export built yet</span>'
-   : `<div class="row" style="margin-top:8px"><button onclick="buildExport()">
-       &#128640; Build combined export</button>
-      <span class="hint">sab books ek zip me (optional)</span></div>`);
+      <span class="hint">in books ke tables approve/edit karo — har
+       book ka gate ALAG hai, doosre book ka zip block nahi hota
+       </span></div>`
+   : (ready.length
+      ? `<span class="badge b-ok">GATE OPEN: ${
+          ready.map(b=>b.subject).join(", ")}</span> <span class="hint">
+          sab chapters verified on disk</span>`
+      : '<span class="hint">no extracted books yet</span>'));
+ $('zip').innerHTML=Object.keys(st.zips||{}).length
+  ? `<div class="row" style="flex-wrap:wrap">${Object.entries(st.zips).map(
+     ([k,z])=>`<button onclick="location='/download?subject=${k}'">
+       &#11015; ${z.name}</button>
+       <span class="hint">${k} &middot; ${mb(z.bytes)} &middot; ${
+       z.mtime}</span>`).join("&nbsp; ")}</div>`
+  : '<span class="hint">no per-book export built yet</span>';
  if(runSubj&&st.jobs[runSubj]&&st.jobs[runSubj].status!=="running")tick();
 }
 async function tick(){

@@ -72,16 +72,16 @@ def test_edit_verified_and_stale(tmp_path):
 def test_gate_locked_until_reviewed(tmp_path, monkeypatch):
     root = _mkroot(tmp_path)
     monkeypatch.delenv("QBANK_FORCE_EXPORT", raising=False)
-    g = gate_final_zip(root)
+    g = gate_final_zip(root, "TST")
     assert g["locked"] and "awaiting human decision" in g["why"]
 
     review.record_decision(root, "TST", "TST-001-001", "001-T01", "approve")
-    g = gate_final_zip(root)
+    g = gate_final_zip(root, "TST")
     assert not g["locked"], g["why"]
 
     # override works even while pending
     review.apply_table_edit(root, "TST", "TST-001-001", "001-T01",
                             MD_FIXED)          # makes decision stale
-    assert gate_final_zip(root)["locked"]
+    assert gate_final_zip(root, "TST")["locked"]
     monkeypatch.setenv("QBANK_FORCE_EXPORT", "1")
-    assert not gate_final_zip(root)["locked"]
+    assert not gate_final_zip(root, "TST")["locked"]
