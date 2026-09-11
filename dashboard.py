@@ -180,8 +180,8 @@ def _job_runner(subject: str, force: bool):
                 res = run_book(pdf, subject, page_offset=offset,
                                force=force)
                 job["log"].append("")
-                job["log"].append("=== export ===")
-                out = build_final_zip(config.OUTPUT_ROOT)
+                job["log"].append(f"=== export {subject} ===")
+                out = build_final_zip(config.OUTPUT_ROOT, subject=subject)
             job["log"].append("")
             job["log"].append("=== review assets ===")
             try:
@@ -260,47 +260,62 @@ def api_status():
             found = Path(pdf).name
         except FileNotFoundError:
             size, found = 0, None
+        has_split = (config.SPLIT_DIR / subj).is_dir()
         rows.append({
             "subject": subj,
             "file": found or entry.get("path"),
             "bytes": size,
             "chapters_done": len(state.get(subj, {}).get("chapters_done", [])),
             "job": (_jobs.get(subj, {}).get("status")),
+            "gate_locked": gate_final_zip(config.OUTPUT_ROOT, subj)["locked"]
+            if has_split else None,
+            "zip": (config.OUTPUT_ROOT /
+                    f"final_export_{subj}.zip").exists(),
         })
     gate = gate_final_zip(config.OUTPUT_ROOT)
-    zp = config.OUTPUT_ROOT / "final_export.zip"
-    zinfo, receipt = None, None
-    if zp.exists():
-        subs = sorted(p.name for p in config.SUBJECTS_DIR.iterdir()
-                      if p.is_dir()) if config.SUBJECTS_DIR.is_dir() else []
-        zinfo = {"bytes": zp.stat().st_size,
-                 "name": ("_".join(subs) + "_final_export.zip") if subs
-                         else "final_export.zip",
-                 "mtime": time.strftime(
-                     "%Y-%m-%d %H:%M:%S",
-                     time.localtime(zp.stat().st_mtime))}
-        try:
-            with zipfile.ZipFile(zp) as z:
-                receipt = json.loads(z.read("REVIEW_RECEIPT.json"))
-        except Exception:                              # noqa: BLE001
-            pass
-    return jsonify(books=rows, gate=gate, zip=zinfo, receipt=receipt,
+    zips = {}
+    for z in sorted(config.OUTPUT_ROOT.glob("final_export*.zip")):
+        key = z.stem[len("final_export"):].strip("_").upper() or "ALL"
+        with zipfile.ZipFile(z) as zf:
+            try:
+                rc = json.loads(zf.read("REVIEW_RECEIPT.json"))
+            except Exception:                          # noqa: BLE001
+                rc = None
+        zips[key] = {"bytes": z.stat().st_size, "name": z.name,
+                     "mtime": time.strftime("%Y-%m-%d %H:%M:%S",
+                                            time.localtime(
+                                                z.stat().st_mtime)),
+                     "receipt": rc}
+    zp = _zip_for(None)
+    return jsonify(books=rows, gate=gate, zips=zips,
+                   zip=zips.get("ALL") or next(iter(zips.values()), None),
+                   receipt=(zips.get("ALL") or {}).get("receipt"),
                    running=any(j["status"] == "running"
                                for j in _jobs.values()),
                    jobs={s: {"status": j["status"], "error": j["error"]}
                          for s, j in _jobs.items()})
 
 
+def _zip_for(subject: str | None):
+    root = config.OUTPUT_ROOT
+    if subject:
+        zp = root / f"final_export_{subject}.zip"
+        return zp if zp.exists() else None
+    zp = root / "final_export.zip"
+    if zp.exists():
+        return zp
+    singles = sorted(root.glob("final_export_*.zip"))
+    return singles[0] if len(singles) == 1 else None
+
+
 @app.get("/download")
 def download():
-    zp = config.OUTPUT_ROOT / "final_export.zip"
-    if not zp.exists():
-        return jsonify(ok=False, error="no export yet — run a book"), 404
-    subs = sorted(p.name for p in config.SUBJECTS_DIR.iterdir()
-                  if p.is_dir()) if config.SUBJECTS_DIR.is_dir() else []
-    name = ("_".join(subs) + "_final_export.zip") if subs \
-        else "final_export.zip"
-    return send_file(zp, as_attachment=True, download_name=name)
+    subj = (request.args.get("subject") or "").strip().upper() or None
+    zp = _zip_for(subj)
+    if zp is None:
+        return jsonify(ok=False,
+                       error="no export yet — run a book / build it"), 404
+    return send_file(zp, as_attachment=True, download_name=zp.name)
 
 
 @app.get("/healthz")
@@ -342,7 +357,7 @@ def api_decision():
             b.get("action", "approve"), b.get("note", ""))
     except KeyError as exc:
         return jsonify(ok=False, error=f"missing field {exc}"), 400
-    _maybe_export()
+    _maybe_export(b["book"])
     return jsonify(row)
 
 
@@ -359,17 +374,17 @@ def api_edit():
         review_mod.record_decision(config.OUTPUT_ROOT, b["book"],
                                    b["q_id"], b["table_id"], b["action"],
                                    "saved via edit")
-        _maybe_export()
+        _maybe_export(b["book"])
     return jsonify(res)
 
 
-def _maybe_export() -> dict | None:
-    """The instant the last pending table is decided the gate opens —
-    rebuild the final zip right then so Download is ready without a
-    re-run. Never raises."""
+def _maybe_export(book: str | None = None) -> dict | None:
+    """The instant the last pending table of a book is decided its gate
+    opens — rebuild THAT book's zip right then so Download is ready
+    without a re-run. Other books' zips stay untouched. Never raises."""
     try:
-        if not gate_final_zip(config.OUTPUT_ROOT)["locked"]:
-            return build_final_zip(config.OUTPUT_ROOT)
+        if not gate_final_zip(config.OUTPUT_ROOT, book)["locked"]:
+            return build_final_zip(config.OUTPUT_ROOT, subject=book)
     except Exception:                                # noqa: BLE001
         pass
     return None
@@ -377,11 +392,14 @@ def _maybe_export() -> dict | None:
 
 @app.post("/api/export")
 def api_export():
-    """Manual trigger: build the review-gated final_export.zip."""
-    gate = gate_final_zip(config.OUTPUT_ROOT)
+    """Manual trigger: per-book independent zip ({"subject": CODE}),
+    or the combined all-books zip when no subject is given."""
+    subj = ((request.get_json(silent=True) or {}).get("subject")
+            or "").strip().upper() or None
+    gate = gate_final_zip(config.OUTPUT_ROOT, subj)
     if gate["locked"]:
         return jsonify(ok=False, error=gate["why"]), 409
-    out = build_final_zip(config.OUTPUT_ROOT)
+    out = build_final_zip(config.OUTPUT_ROOT, subject=subj)
     if not out["ok"]:
         return jsonify(ok=False, error=out["why"]), 409
     return jsonify(ok=True, zip=str(out["path"]), receipt=out["receipt"])
@@ -539,9 +557,11 @@ async function upload(){
                             :("error: "+r.error);
  if(r.ok)refresh();
 }
-async function buildExport(){
- const r=await fetch("/api/export",{method:"POST"}).then(r=>r.json());
- if(!r.ok){alert("export refused: "+r.error);return}
+async function buildExport(s){
+ const r=await fetch("/api/export",{method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify(s?{subject:s}:{})}).then(r=>r.json());
+ if(!r.ok){alert("export refused: "+(r.error||"?"));return}
  refresh();
 }
 async function fetchLink(){
@@ -572,13 +592,20 @@ async function refresh(){
    :j==="error"?'<span class="badge b-err">ERROR</span>'
    :j==="done"?'<span class="badge b-ok">DONE</span>'
    :'<span class="badge b-idle">idle</span>';
+  const zb=b.zip
+   ?`<button class="sec" title="download ${b.subject} zip"
+      onclick="location='/download?subject=${b.subject}'">&#11015;</button>`
+   :(b.gate_locked===false
+     ?`<button class="sec" title="build ${b.subject} zip"
+        onclick="buildExport('${b.subject}')">zip</button>`
+     :"");
   return `<tr><td><b>${b.subject}</b></td>
    <td>${b.file??"<i>missing</i>"}</td><td>${b.bytes?mb(b.bytes):"—"}</td>
    <td>${b.chapters_done}</td><td>${badge}</td>
    <td><button ${st.running?"disabled":""}
      onclick="run('${b.subject}',false)">Run</button>
     <button class="sec" ${st.running?"disabled":""}
-     onclick="run('${b.subject}',true)">Re-run</button></td></tr>`;
+     onclick="run('${b.subject}',true)">Re-run</button> ${zb}</td></tr>`;
  }).join("")||'<tr><td colspan=6 class="hint">no books yet</td></tr>';
  const g=st.gate;
  $('gate').innerHTML=g.locked
@@ -591,18 +618,19 @@ async function refresh(){
        unlock ho jayega</span></div>`
   : `<span class="badge b-ok">GATE OPEN</span> <span class="hint">${
       g.chapters} chapter(s) verified on disk</span>`;
- $('zip').innerHTML=st.zip
-  ? `<div class="row"><button onclick="location='/download'">
-      &#11015; Download ${st.zip.name || 'final_export.zip'}</button>
-     <span class="hint">${mb(st.zip.bytes)} &middot; built ${st.zip.mtime}${
-      st.receipt?` &middot; ${st.receipt.chapters} chapters &middot; ${
-      JSON.stringify(st.receipt.shipped_qa_status_counts)}`:""}</span>
-     </div>`
-  : (g.locked
-    ? '<span class="hint">no export built yet</span>'
-    : `<div class="row"><button onclick="buildExport()">
-        &#128640; Build export</button>
-       <span class="hint">gate open — zip abhi banao</span></div>`);
+ $('zip').innerHTML=
+  (Object.keys(st.zips||{}).length
+   ? `<div class="row" style="flex-wrap:wrap">${Object.entries(st.zips).map(
+      ([k,z])=>`<button onclick="location='/download?subject=${
+        k==="ALL"?"":k}'">&#11015; ${z.name}</button>
+        <span class="hint">${k} &middot; ${mb(z.bytes)} &middot; ${
+        z.mtime}</span>`).join("&nbsp; ")}</div>`
+   : "") +
+  (g.locked
+   ? '<span class="hint">no combined export built yet</span>'
+   : `<div class="row" style="margin-top:8px"><button onclick="buildExport()">
+       &#128640; Build combined export</button>
+      <span class="hint">sab books ek zip me (optional)</span></div>`);
  if(runSubj&&st.jobs[runSubj]&&st.jobs[runSubj].status!=="running")tick();
 }
 async function tick(){

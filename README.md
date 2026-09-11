@@ -7,7 +7,8 @@ v2 replaces the old OCR/Gemini/review-layer pipeline. The text layer of
 the corrected books is authoritative, so extraction is now **fully
 deterministic — zero LLM calls, zero network, pure CLI**. Nothing is
 ever guessed: a row is written only when the printed page proves it,
-and the census gate refuses to build the export zip when any chapter's
+and the census gate (per book, or across all books for the combined zip)
+refuses to build an export zip when any chapter's
 question headers, answer-key rows and solution headers do not match.
 
 ## Prerequisites
@@ -65,6 +66,7 @@ pip install -r requirements.txt
 python -m qbank run --book BIO              # extract (resumable per chapter)
 python -m qbank status                      # progress + export-gate report
 python -m qbank export                      # gate + build final_export.zip
+python -m qbank export --book ENT           # ENT-only zip, ENT-only gate
 ```
 
 `books.json` registers books:
@@ -94,7 +96,11 @@ python dashboard.py        # binds 0.0.0.0:$PORT (default 8000)
   subject code defaults to the file name prefix)
 - **Run / Re-run** in a background thread with a live chapter log;
   one book at a time; the export step runs automatically afterwards
-- **Download** `final_export.zip` (gate status + receipt shown inline)
+- **Download** — every book gets its OWN `final_export_<CODE>.zip` with its
+  OWN gate (only that book's completeness + review queue must be clear), so
+  running a new book never reopens or blocks the old book's zip. A combined
+  `final_export.zip` of all books stays available when every gate is clear
+  (gate status + receipt shown inline)
 
 On Railway: mount a Volume at `/out` so the zip survives redeploys
 (and optionally `/pdfs` for uploads). Railway injects `$PORT`; the

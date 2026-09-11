@@ -70,11 +70,12 @@ def cmd_run(args) -> int:
 
 
 def cmd_export(args) -> int:
-    res = build_final_zip(config.OUTPUT_ROOT, dest=args.dest)
+    res = build_final_zip(config.OUTPUT_ROOT, dest=args.dest,
+                          subject=args.book)
     if not res["ok"]:
         print(f"REFUSED: {res['why']}", file=sys.stderr)
         return 3
-    print(f"final_export.zip -> {res['path']}")
+    print(f"export -> {res['path']}")
     print(json.dumps(res["receipt"], indent=2))
     return 0
 
@@ -129,8 +130,11 @@ def main(argv=None) -> int:
                        help="re-extract chapters already marked done")
     p_run.set_defaults(fn=cmd_run)
 
-    p_exp = sub.add_parser("export", help="build final_export.zip")
+    p_exp = sub.add_parser("export", help="build final_export zip "
+                                          "(per book with --book)")
     p_exp.add_argument("--dest", default=None)
+    p_exp.add_argument("--book", help="subject code: independent zip "
+                                      "for that book only")
     p_exp.set_defaults(fn=cmd_export)
 
     p_st = sub.add_parser("status", help="resume state + export gate")

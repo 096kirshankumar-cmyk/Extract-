@@ -166,10 +166,13 @@ def edit_count(out_root: Path) -> int:
     return len(_read_jsonl(Path(out_root) / EDIT_LEDGER))
 
 
-def pending_count(out_root: Path) -> int:
-    """REVIEW tables whose decision is missing or stale."""
+def pending_count(out_root: Path, subject: str | None = None) -> int:
+    """REVIEW tables whose decision is missing or stale. subject=CODE
+    scopes the count to one book so per-book gates stay independent."""
     return sum(1 for it in review_tables(out_root)
-               if it["state"] == "pending" or it["state"].startswith("stale"))
+               if (subject is None or it["book"] == subject)
+               and (it["state"] == "pending"
+                    or it["state"].startswith("stale")))
 
 
 # ------------------------------------------------- question-level edits

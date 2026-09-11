@@ -34,6 +34,13 @@ def _read_jsonl(p: Path):
             if l.strip()]
 
 
+def _split_glob(out_root: Path, subject: str | None, name: str):
+    if subject:
+        return sorted((out_root / "split" / subject).glob(f"*/{name}")) \
+            if (out_root / "split" / subject).is_dir() else []
+    return sorted((out_root / "split").glob(f"*/*/{name}"))
+
+
 def _llm_used(out_root: Path) -> bool:
     """True when the Gemini transcription stage produced any evidence:
     cached model responses, or any shipped table repaired by it."""
@@ -43,11 +50,11 @@ def _llm_used(out_root: Path) -> bool:
     return False
 
 
-def _table_stats(out_root: Path) -> tuple:
+def _table_stats(out_root: Path, subject: str | None = None) -> tuple:
     """(gemini_repaired_tables, qa_review_tables) over shipped rows."""
     seen, gem, review = set(), 0, 0
     for nf in ("questions.jsonl", "solutions.jsonl"):
-        for qf in sorted((out_root / "split").glob(f"*/*/{nf}")):
+        for qf in _split_glob(out_root, subject, nf):
             for row in _read_jsonl(qf):
                 for t in row.get("tables") or []:
                     tid = t.get("table_id")
@@ -63,13 +70,15 @@ def _table_stats(out_root: Path) -> tuple:
     return gem, review
 
 
-def gate_final_zip(output_root) -> dict:
+def gate_final_zip(output_root, subject: str | None = None) -> dict:
+    """subject=None => whole volume; subject=CODE => only that book's
+    chapters + its REVIEW tables gate ITS zip (a new book's run never
+    re-locks an already-shipped one)."""
     out_root = Path(output_root)
-    split_root = out_root / "split"
     problems = []
     review_needed = 0
     chapters = 0
-    for cf in sorted(split_root.glob("*/*/chapter_completeness.json")):
+    for cf in _split_glob(out_root, subject, "chapter_completeness.json"):
         chapters += 1
         comp = json.loads(cf.read_text())
         census = comp.get("census") or {}
@@ -84,13 +93,14 @@ def gate_final_zip(output_root) -> dict:
     if review_needed:
         problems.append(f"{review_needed} row(s) flagged REVIEW_NEEDED")
     if chapters == 0:
-        problems.append("no chapters on disk")
+        problems.append("no chapters on disk"
+                        + (f" for {subject}" if subject else ""))
     # human review layer (adopted): final zip hard-locked while any
     # REVIEW table is undecided/stale — override QBANK_FORCE_EXPORT=1
     import os
     from . import review
     if os.environ.get("QBANK_FORCE_EXPORT") != "1":
-        pend = review.pending_count(out_root)
+        pend = review.pending_count(out_root, subject)
         if pend:
             problems.append(
                 f"{pend} REVIEW table(s) awaiting human decision "
@@ -102,17 +112,21 @@ def gate_final_zip(output_root) -> dict:
     }
 
 
-def build_final_zip(output_root, dest=None) -> dict:
+def build_final_zip(output_root, dest=None,
+                    subject: str | None = None) -> dict:
+    """subject=CODE builds an INDEPENDENT zip for that book only
+    (final_export_<CODE>.zip): its split, its chapters.json, only its
+    manifest-referenced assets. Other books' zips stay untouched."""
     out_root = Path(output_root)
-    gate = gate_final_zip(out_root)
+    gate = gate_final_zip(out_root, subject)
     if gate["locked"]:
         return {"ok": False, "locked": True, "why": gate["why"]}
 
-    dest = Path(dest or (out_root / "final_export.zip"))
-    split_root = out_root / "split"
+    dest = Path(dest or (out_root / (
+        f"final_export_{subject}.zip" if subject else "final_export.zip")))
     referenced = set()
     subjects = set()
-    manifest_files = sorted(split_root.glob("*/*/image_manifest.jsonl"))
+    manifest_files = _split_glob(out_root, subject, "image_manifest.jsonl")
     for mf in manifest_files:
         subjects.add(mf.parts[-3])
         for row in _read_jsonl(mf):
@@ -121,8 +135,8 @@ def build_final_zip(output_root, dest=None) -> dict:
 
     shipped_status: dict = {}
     glyph_fix_total = 0
-    llm_tables, qa_review_tables = _table_stats(out_root)
-    for qf in sorted(split_root.glob("*/*/questions.jsonl")):
+    llm_tables, qa_review_tables = _table_stats(out_root, subject)
+    for qf in _split_glob(out_root, subject, "questions.jsonl"):
         for row in _read_jsonl(qf):
             st = row.get("qa_status") or "UNLABELLED"
             shipped_status[st] = shipped_status.get(st, 0) + 1
@@ -156,13 +170,17 @@ def build_final_zip(output_root, dest=None) -> dict:
                    json.dumps(receipt, indent=2, ensure_ascii=False))
         if fm.exists():
             z.write(fm, "FORMAT.md")
-        for p in sorted(split_root.rglob("*")):
-            if p.is_file() and p.name in SPLIT_KEEP:
+        for name in sorted(SPLIT_KEEP):
+            for p in _split_glob(out_root, subject, name):
                 z.write(p, str(p.relative_to(out_root)))
         subj_dir = out_root / "subjects"
         if subj_dir.exists():
-            for cj in sorted(subj_dir.glob("*/chapters.json")):
-                z.write(cj, str(cj.relative_to(out_root)))
+            wanted = [subject] if subject else \
+                [c.name for c in sorted(subj_dir.iterdir()) if c.is_dir()]
+            for s in wanted:
+                cj = subj_dir / s / "chapters.json"
+                if cj.exists():
+                    z.write(cj, str(cj.relative_to(out_root)))
         aroot = out_root / "assets" / "questions"
         for rel in sorted(referenced):
             p = aroot / rel

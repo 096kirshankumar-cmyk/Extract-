@@ -265,3 +265,42 @@ def test_export_refused_while_gate_locked(client):
     r = client.post("/api/export")
     assert r.status_code == 409
     assert "REVIEW" in r.get_json()["error"]
+
+def _add_clean_subject(root):
+    ch = root / "split" / "AAA" / "AAA-001"
+    ch.mkdir(parents=True)
+    (ch / "questions.jsonl").write_text(json.dumps({
+        "q_id": "AAA-001-001", "question_text": "q",
+        "options": [{"id": l, "text": t}
+                    for l, t in zip("ABCD", "abcd")]}) + "\n")
+    (ch / "answers.jsonl").write_text(json.dumps(
+        {"q_id": "AAA-001-001", "correct_option": "A"}) + "\n")
+    (ch / "solutions.jsonl").write_text(json.dumps(
+        {"q_id": "AAA-001-001", "solution_text": "s"}) + "\n")
+    (ch / "image_manifest.jsonl").write_text("")
+    (ch / "chapter_completeness.json").write_text(json.dumps({
+        "chapter_id": "AAA-001", "census": {"ok": True},
+        "qa_status_counts": {}, "unresolved_qid_count": 0}))
+
+
+def test_per_book_gate_and_independent_zip(client):
+    from qbank.export import gate_final_zip
+    root = config.OUTPUT_ROOT
+    _add_clean_subject(root)
+    # TST still has a pending REVIEW table; AAA is clean
+    assert gate_final_zip(root, "AAA")["locked"] is False
+    assert gate_final_zip(root, "TST")["locked"] is True
+    assert gate_final_zip(root)["locked"] is True
+    # independent zip: AAA builds, TST refused, AAA zip has no TST files
+    r = client.post("/api/export", json={"subject": "AAA"})
+    assert r.status_code == 200, r.get_json()
+    names = zipfile.ZipFile(root / "final_export_AAA.zip").namelist()
+    assert any("AAA-001/questions.jsonl" in n for n in names)
+    assert not any("TST" in n for n in names)
+    assert client.post("/api/export", json={"subject": "TST"}
+                       ).status_code == 409
+    assert client.get("/download?subject=AAA").status_code == 200
+    assert client.get("/download?subject=TST").status_code == 404
+    # status exposes the independent zip
+    st = client.get("/api/status").get_json()
+    assert st["zips"]["AAA"]["name"] == "final_export_AAA.zip"
