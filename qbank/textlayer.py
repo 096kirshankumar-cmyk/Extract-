@@ -303,16 +303,35 @@ def reflow(lines: list[Line]) -> str:
 
     Wrapped sentence lines join with a single space; structural lines
     (bullets, (1)-style sub-items, 'Option A:' commentary) keep their
-    own line. Deterministic — no content is added or removed.
+    own line; a vertical gap clearly bigger than a wrap gap starts a
+    NEW LINE (paragraph / bullet) — the book's own layout is the
+    authority. Deterministic — no content is added or removed.
     """
-    out = []
+    gaps = sorted(b.y0 - a.y1 for a, b in zip(lines, lines[1:])
+                  if a.page == b.page and b.y0 - a.y1 > 0)
+    if gaps:
+        med = gaps[len(gaps) // 2]
+        # wrapped (continuation) lines hug the previous line; fresh
+        # lines (new paragraph / bullet) sit a clear gap below. When
+        # the block is ALL wraps the median itself is tiny, so scale
+        # up instead of down.
+        thr = med * 0.5 if med >= 3.0 else med * 1.5
+    else:
+        thr = None
+    out, prev = [], None
     for ln in lines:
         t = ln.text.strip()
         if not t:
             continue
         if out:
-            out.append("\n" if _NEW_GROUP.match(t) else " ")
+            if (thr is not None and prev is not None
+                    and prev.page == ln.page
+                    and ln.y0 - prev.y1 > thr):
+                out.append("\n")
+            else:
+                out.append("\n" if _NEW_GROUP.match(t) else " ")
         out.append(t)
+        prev = ln
     return "".join(out)
 
 
