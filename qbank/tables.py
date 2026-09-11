@@ -122,6 +122,8 @@ def spacing_fix(text: str) -> str:
                                         word
       "nerve(T3)"   -> "nerve (T3)"    one space before "(" and
       "(T3)is"      -> "(T3) is"       after ")"
+      "following:Anterior" -> "following: Anterior"
+                                       one space after ":" too
 
     Safe: bare "D4"/"T3" untouched; "HbA1c", "C2H5OH", "vitamin B12"
     are never split (A/B are not in the notation set; an uppercase
@@ -138,6 +140,9 @@ def spacing_fix(text: str) -> str:
                  " ", out)
     # vertebral notation + lowercase word ("D4vertebra", "T3nerve")
     out = re.sub(r"(?<=[CDTLS]\d)(?=[a-z])", " ", out)
+    # colon: exactly one space after it — but never inside digit
+    # ratios/times ("1:1000" adrenaline, "10:30") or URLs ("http://")
+    out = re.sub(r"(?<!\d): *(?=[^\s:/])", ": ", out)
     # brackets: exactly one space before "(" and after ")"
     out = re.sub(r"(?<=[^\s(]) *\(", " (", out)
     out = re.sub(r"\) *(?=[^\s)])", ") ", out)
